@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini-smolagents"
+version = "0.1.0"
+description = "A minimal agent framework — ReAct single agent with native function calling."
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.0",
+    "ddgs>=9.0",
+    "python-dotenv",
+]
+
+[tool.setuptools.packages.find]
+include = ["mini_smolagents*"]
