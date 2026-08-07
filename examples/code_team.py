@@ -38,6 +38,7 @@ developer = Agent(
     model=model,
     tools=[web_search, python_interpreter],
     name="developer",
+    description="Python 开发者，写代码和调试。用 python_interpreter 逐步实现功能和测试。",
     system_prompt=DEV_PROMPT,
 )
 
@@ -45,6 +46,7 @@ reviewer = Agent(
     model=model,
     tools=[web_search],
     name="reviewer",
+    description="代码审核员，审查代码的逻辑错误、安全问题、代码风格，不重写代码。",
     system_prompt=REVIEWER_PROMPT,
 )
 
