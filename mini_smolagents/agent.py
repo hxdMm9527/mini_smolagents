@@ -13,6 +13,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from .default_tools import ALLOWED_BUILTINS, ALLOWED_IMPORTS, _safe_import, final_answer as _FINAL_ANSWER_TOOL
+from .types import Tool
 
 SYSTEM_PROMPT = """\
 你是一个善于逐步解决问题的助手。你可以使用工具调用来完成任务。
@@ -22,16 +23,48 @@ SYSTEM_PROMPT = """\
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=10, max_messages=30, stream=False):
+    def __init__(self, model, tools, max_steps=10, max_messages=30, stream=False, name=None, description=None, managed_agents=None):
         self.model = model
         self.max_steps = max_steps
         self.max_messages = max_messages
         self.stream = stream
         self.console = Console()
+        self.name = name
+        self.description = description
         self.tools = {}
 
         for t in tools:
             self.tools[t.name] = t
+
+        if managed_agents:
+            for sub in managed_agents:
+                sub_name = sub.name
+                sub_desc = sub.description
+                if not sub_name or not sub_desc:
+                    raise ValueError("每个被管理的 Agent 必须有 name 和 description")
+                if sub_name in self.tools:
+                    raise ValueError(f"被管理的 Agent 名称 '{sub_name}' 与已有工具重名")
+
+                def _make_managed_call(_sub):
+                    def _call(task: str = "") -> str:
+                        return _sub.run(task)
+                    return _call
+
+                self.tools[sub_name] = Tool(
+                    name=sub_name,
+                    description=sub_desc,
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "task": {
+                                "type": "string",
+                                "description": f"给 {sub_name} 的详细任务描述",
+                            }
+                        },
+                        "required": ["task"],
+                    },
+                    func=_make_managed_call(sub),
+                )
 
         if "final_answer" not in self.tools:
             self.tools["final_answer"] = _FINAL_ANSWER_TOOL
@@ -187,8 +220,8 @@ def _trunc(text: str, max_len: int) -> str:
 
 
 class CodeAgent(Agent):
-    def __init__(self, model, tools, max_steps=8, max_messages=30, additional_imports=None):
-        super().__init__(model, tools, max_steps, max_messages)
+    def __init__(self, model, tools, max_steps=8, max_messages=30, additional_imports=None, name=None, description=None, managed_agents=None):
+        super().__init__(model, tools, max_steps, max_messages, name=name, description=description, managed_agents=managed_agents)
         self.authorized_imports = list(set(ALLOWED_IMPORTS) | set(additional_imports or []))
 
     def _build_sandbox(self):

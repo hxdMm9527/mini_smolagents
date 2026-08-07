@@ -341,3 +341,72 @@ def test_code_agent_code_error():
 
     result = agent.run("test")
     assert "result for hello" in result
+
+
+def test_managed_agent_identity():
+    """验证被管理的 Agent 有 name 和 description"""
+    model = MagicMock(spec=OpenAIModel)
+    sub = Agent(model=model, tools=[], name="helper", description="A helper agent")
+    assert sub.name == "helper"
+    assert sub.description == "A helper agent"
+
+
+def test_managed_agent_registration():
+    """验证子 Agent 被注册为主 Agent 的 Tool"""
+
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = MagicMock(spec=OpenAIModel)
+    sub = Agent(model=model, tools=[], name="researcher", description="研究助手")
+
+    manager = Agent(model=model, tools=[dummy], managed_agents=[sub])
+    assert "researcher" in manager.tools
+    assert manager.tools["researcher"].name == "researcher"
+    assert manager.tools["researcher"].parameters["required"] == ["task"]
+
+
+def test_managed_agent_called_by_manager():
+    """主 Agent 调子 Agent，子 Agent 返回结果"""
+
+    @tool
+    def search(q: str) -> str:
+        return f"搜索: {q}"
+
+    model = MagicMock(spec=OpenAIModel)
+
+    sub = Agent(model=model, tools=[search], name="helper", description="助手")
+    sub.run = MagicMock(return_value="找到的资料")
+
+    manager = Agent(model=model, tools=[], managed_agents=[sub])
+
+    msg1 = MagicMock()
+    msg1.content = None
+    tc1 = MagicMock()
+    tc1.id = "call_helper"
+    tc1.function.name = "helper"
+    tc1.function.arguments = '{"task": "找资料"}'
+    msg1.tool_calls = [tc1]
+
+    msg2 = MagicMock()
+    msg2.content = None
+    tc2 = MagicMock()
+    tc2.id = "call_done"
+    tc2.function.name = "final_answer"
+    tc2.function.arguments = '{"answer": "任务完成，基于：找到的资料"}'
+    msg2.tool_calls = [tc2]
+
+    resp1 = MagicMock()
+    resp1.choices = [MagicMock()]
+    resp1.choices[0].message = msg1
+
+    resp2 = MagicMock()
+    resp2.choices = [MagicMock()]
+    resp2.choices[0].message = msg2
+
+    model.generate.side_effect = [resp1, resp2]
+
+    result = manager.run("复杂任务")
+    sub.run.assert_called_once_with("找资料")
+    assert "任务完成" in result
