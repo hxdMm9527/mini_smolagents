@@ -1,9 +1,13 @@
 import io
 import json
 import re
+import sys
 import threading
 import time
 from contextlib import redirect_stderr, redirect_stdout
+
+if sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 from rich.console import Console
 from rich.live import Live
@@ -32,7 +36,7 @@ class Agent:
         self.max_messages = max_messages
         self.stream = stream
         self.system_prompt = system_prompt or SYSTEM_PROMPT
-        self.console = Console()
+        self.console = Console(force_terminal=True)
         self.name = name
         self.description = description
         self.tools = {}

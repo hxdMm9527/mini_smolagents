@@ -8,7 +8,7 @@ ALLOWED_IMPORTS = ["math", "json", "re", "datetime", "random", "collections"]
 ALLOWED_BUILTINS = {
     "abs": abs, "all": all, "any": any, "bool": bool, "dict": dict,
     "enumerate": enumerate, "filter": filter, "float": float, "int": int,
-    "len": len, "list": list, "map": map, "max": max, "min": min,
+    "isinstance": isinstance, "len": len, "list": list, "map": map, "max": max, "min": min,
     "print": print, "range": range, "round": round, "set": set,
     "sorted": sorted, "str": str, "sum": sum, "tuple": tuple, "type": type,
     "zip": zip, "True": True, "False": False, "None": None,
