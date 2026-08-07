@@ -18,7 +18,10 @@ from .types import Tool
 SYSTEM_PROMPT = """\
 你是一个善于逐步解决问题的助手。你可以使用工具调用来完成任务。
 当你有最终答案时，调用 `final_answer` 工具。
-不要在相同的参数下重复调用同一个工具。\
+不要在相同的参数下重复调用同一个工具。
+如果你使用了 `create_sub_agent`，你仍然是最终答案的负责人。
+不要把用户任务原封不动转发给子助手——你必须亲自分析、拆解后再委托。
+子助手的返回结果不能直接作为 final_answer，你需要亲自综合或验证。\
 """
 
 
@@ -93,11 +96,23 @@ class Agent:
                 max_steps=agent_self.max_steps,
                 max_messages=agent_self.max_messages,
             )
-            return sub.run(task)
+            # ponytail: 以下两段守卫暂时注释。若 LLM 频繁偷懒（原封不动转发任务），取消注释启用：
+            # 守卫 1：拒绝原封不动转发
+            # if hasattr(agent_self, "_original_task") and task.strip() == agent_self._original_task.strip():
+            #     return "错误：不能把用户任务原封不动转发给子助手。请先自己分析、拆解后再委托。"
+            result = sub.run(task)
+            # 守卫 2：追加验证提示，防止 LLM 直接把子助手结果当 final_answer
+            # result += "\n\n[系统提示：请验证以上子助手的结果，给出你自己的综合分析后再调用 final_answer。]"
+            return result
 
         return Tool(
             name="create_sub_agent",
-            description="创建一个临时助手来完成子任务。助手独立运行 ReAct 循环，任务完成后返回结果。适合将复杂任务拆分给专门的助手处理。",
+            description=(
+                "创建一个临时助手来执行需要独立研究的复杂子任务。"
+                "重要：你必须亲自拆解任务给子助手，不能把用户任务原封不动转发。"
+                "子助手返回结果后，你必须亲自综合或验证，不能直接作为最终答案。"
+                "适合将复杂任务拆分给专门的助手处理。"
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -132,6 +147,8 @@ class Agent:
         return [messages[0], messages[1]] + messages[-(self.max_messages - 2):]
 
     def run(self, task: str) -> str:
+        # ponytail: 配合 create_sub_agent 守卫 1 使用。取消注释下方守卫后启用此行
+        # self._original_task = task
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": task},
