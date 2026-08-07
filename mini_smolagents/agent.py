@@ -114,7 +114,17 @@ class Agent:
             if hasattr(agent_self, "_original_task") and task.strip() == agent_self._original_task.strip():
                 return "错误：不能把用户任务原封不动转发给子助手。请先自己分析、拆解后再委托。"
 
-            result = sub.run(task)
+            try:
+                result = sub.run(task)
+            except RuntimeError:
+                parts = []
+                for msg in sub._last_messages:
+                    if msg["role"] == "tool" and msg.get("content"):
+                        parts.append(msg["content"][:500])
+                if parts:
+                    result = "子助手达到最大步数，以下是已收集的部分信息：\n\n" + "\n---\n".join(parts)
+                else:
+                    result = "子助手达到最大步数，且未获取到任何有效信息。"
             agent_self._sub_results[name] = result
 
             result += "\n\n[系统提示：请验证以上子助手的结果，给出你自己的综合分析后再调用 final_answer。]"
@@ -172,6 +182,7 @@ class Agent:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": task},
         ]
+        self._last_messages = messages
         tools_schema = self._build_tools_schema()
 
         for step in range(1, self.max_steps + 1):
