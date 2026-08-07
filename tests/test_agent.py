@@ -200,11 +200,10 @@ def test_agent_max_steps():
 
     model.generate.return_value = resp
 
-    try:
-        agent.run("死循环任务")
-        assert False, "应该抛异常"
-    except RuntimeError as e:
-        assert "最大步数" in str(e)
+    agent._summarize_messages = MagicMock(return_value="总结：任务未完成")
+    result = agent.run("死循环任务")
+    agent._summarize_messages.assert_called_once()
+    assert result == "总结：任务未完成"
 
 
 def test_trim_messages():

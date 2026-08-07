@@ -26,7 +26,7 @@ SYSTEM_PROMPT = """\
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=10, max_messages=30, stream=False, name=None, description=None, managed_agents=None):
+    def __init__(self, model, tools, max_steps=10, max_messages=30, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True):
         self.model = model
         self.max_steps = max_steps
         self.max_messages = max_messages
@@ -71,7 +71,8 @@ class Agent:
                     func=_make_managed_call(sub),
                 )
 
-        self.tools["create_sub_agent"] = self._build_create_sub_agent_tool()
+        if allow_delegation:
+            self.tools["create_sub_agent"] = self._build_create_sub_agent_tool()
 
         if "final_answer" not in self.tools:
             self.tools["final_answer"] = _FINAL_ANSWER_TOOL
@@ -109,6 +110,7 @@ class Agent:
                 name=name,
                 max_steps=min(5, agent_self.max_steps),
                 max_messages=agent_self.max_messages,
+                allow_delegation=False,
             )
 
             if hasattr(agent_self, "_original_task") and task.strip() == agent_self._original_task.strip():
@@ -116,15 +118,8 @@ class Agent:
 
             try:
                 result = sub.run(task)
-            except RuntimeError:
-                parts = []
-                for msg in sub._last_messages:
-                    if msg["role"] == "tool" and msg.get("content"):
-                        parts.append(msg["content"][:500])
-                if parts:
-                    result = "子助手达到最大步数，以下是已收集的部分信息：\n\n" + "\n---\n".join(parts)
-                else:
-                    result = "子助手达到最大步数，且未获取到任何有效信息。"
+            except Exception as e:
+                result = f"子助手执行失败: {type(e).__name__}: {e}"
             agent_self._sub_results[name] = result
 
             result += "\n\n[系统提示：请验证以上子助手的结果，给出你自己的综合分析后再调用 final_answer。]"
@@ -174,6 +169,31 @@ class Agent:
         if len(messages) <= self.max_messages:
             return messages
         return [messages[0], messages[1]] + messages[-(self.max_messages - 2):]
+
+    def _summarize_messages(self, messages):
+        parts = []
+        for msg in messages:
+            if msg["role"] == "tool" and msg.get("content"):
+                parts.append(f"工具返回: {msg['content'][:800]}")
+            elif msg["role"] == "assistant" and msg.get("content"):
+                parts.append(f"分析: {msg['content'][:500]}")
+
+        if not parts:
+            return "(任务未完成，无有效信息)"
+
+        summary_prompt = (
+            "请基于以下步骤记录，总结已完成的工作和获得的关键信息。只提取有价值的事实数据，忽略错误和空结果。用中文简要回答。\n\n"
+            + "\n---\n".join(parts)
+        )
+        summary_msgs = [
+            {"role": "system", "content": "你是一个善于总结信息的助手。"},
+            {"role": "user", "content": summary_prompt},
+        ]
+        try:
+            resp = self.model.generate(summary_msgs)
+            return resp.choices[0].message.content
+        except Exception:
+            return "\n".join(parts[:3]) + "\n\n(超时，以上为部分结果)"
 
     def run(self, task: str) -> str:
         # ponytail: 配合 create_sub_agent 守卫 1 使用。取消注释下方守卫后启用此行
@@ -267,9 +287,8 @@ class Agent:
                     self.console.print(Panel(Text(str(result), style="bold gold1"), border_style="gold1", title="Done"))
                     return str(result)
 
-        raise RuntimeError(
-            f"Agent 达到最大步数（{self.max_steps}）但未完成任务。"
-        )
+        self.console.print(Panel(Text("达到最大步数，正在总结已有结果...", style="orange3"), border_style="orange3"))
+        return self._summarize_messages(self._last_messages)
 
 
 class _FinalAnswer(Exception):
@@ -407,6 +426,5 @@ class CodeAgent(Agent):
                 self.console.print(Panel(Text(value, style="bold gold1"), border_style="gold1", title="Done"))
                 return value
 
-        raise RuntimeError(
-            f"Agent 达到最大步数（{self.max_steps}）但未完成任务。"
-        )
+        self.console.print(Panel(Text("达到最大步数，正在总结已有结果...", style="orange3"), border_style="orange3"))
+        return self._summarize_messages(self._last_messages)
