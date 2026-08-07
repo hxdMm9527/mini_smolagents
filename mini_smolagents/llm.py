@@ -27,3 +27,12 @@ class OpenAIModel:
             tools=tools,
             **self.client_kwargs,
         )
+
+    def generate_stream(self, messages: list[dict], tools: list[dict] | None = None):
+        return self.client.chat.completions.create(
+            model=self.model_id,
+            messages=messages,
+            tools=tools,
+            stream=True,
+            **self.client_kwargs,
+        )

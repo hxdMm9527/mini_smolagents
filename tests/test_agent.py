@@ -205,3 +205,139 @@ def test_agent_max_steps():
         assert False, "应该抛异常"
     except RuntimeError as e:
         assert "最大步数" in str(e)
+
+
+def test_trim_messages():
+    """验证消息截断：保留 system + 首条 user + 最近 N-2 条"""
+
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = Agent(model=model, tools=[dummy], max_messages=5)
+
+    msgs = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "tool", "content": "t1"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "tool", "content": "t2"},
+        {"role": "assistant", "content": "a3"},
+        {"role": "tool", "content": "t3"},
+    ]
+
+    trimmed = agent._get_trimmed_messages(msgs)
+
+    assert len(trimmed) == 5
+    assert trimmed[0]["content"] == "system"
+    assert trimmed[1]["content"] == "task"
+    assert trimmed[2]["content"] == "t2"
+    assert trimmed[3]["content"] == "a3"
+    assert trimmed[4]["content"] == "t3"
+
+
+def test_trim_messages_not_needed():
+    """消息数没超 max_messages，不截断"""
+
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = Agent(model=model, tools=[dummy], max_messages=10)
+
+    msgs = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+    trimmed = agent._get_trimmed_messages(msgs)
+    assert trimmed is msgs
+
+
+def test_code_agent_extract_code():
+    from mini_smolagents.agent import _extract_code
+
+    assert _extract_code("<code>print(1)</code>") == "print(1)"
+    assert _extract_code("think...\n<code>\nx = 1\n</code>\n") == "x = 1"
+    assert _extract_code("```python\nprint(1)\n```") == "print(1)"
+    assert _extract_code("```\nprint(1)\n```") == "print(1)"
+    assert _extract_code("no code tags") == "no code tags"
+
+
+def test_code_agent_final_answer_exception():
+    from mini_smolagents.agent import CodeAgent, _StopExec
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = CodeAgent(model=model, tools=[])
+
+    sandbox, fa = agent._build_sandbox()
+    try:
+        sandbox["final_answer"]("result_value")
+        assert False, "应该抛 _StopExec"
+    except _StopExec:
+        pass
+    assert fa["value"] == "result_value"
+
+
+def test_code_agent_run_with_final_answer():
+    """LLM 生成 final_answer() 代码，Agent 捕获后返回"""
+
+    from mini_smolagents import CodeAgent, tool
+
+    @tool
+    def calc(expression: str) -> str:
+        return str(eval(expression))
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = CodeAgent(model=model, tools=[calc])
+
+    msg = MagicMock()
+    msg.content = "<code>\nresult = calc('5 + 3')\nfinal_answer(f'The answer is {result}')\n</code>"
+    msg.tool_calls = None
+
+    resp = MagicMock()
+    resp.choices = [MagicMock()]
+    resp.choices[0].message = msg
+
+    model.generate.return_value = resp
+
+    result = agent.run("5+3 等于多少？")
+    assert "answer is 8" in result
+
+
+def test_code_agent_code_error():
+    """LLM 写了错误代码，Agent 把错误反馈回去，LLM 修正后成功"""
+
+    from mini_smolagents import CodeAgent, tool
+
+    @tool
+    def lookup(query: str) -> str:
+        return f"result for {query}"
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = CodeAgent(model=model, tools=[lookup])
+
+    msg1 = MagicMock()
+    msg1.content = "<code>\n1 / 0\n</code>"
+    msg1.tool_calls = None
+
+    msg2 = MagicMock()
+    msg2.content = "<code>\nresult = lookup('hello')\nfinal_answer(result)\n</code>"
+    msg2.tool_calls = None
+
+    resp1 = MagicMock()
+    resp1.choices = [MagicMock()]
+    resp1.choices[0].message = msg1
+
+    resp2 = MagicMock()
+    resp2.choices = [MagicMock()]
+    resp2.choices[0].message = msg2
+
+    model.generate.side_effect = [resp1, resp2]
+
+    result = agent.run("test")
+    assert "result for hello" in result
