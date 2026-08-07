@@ -35,6 +35,8 @@ class Agent:
         self.name = name
         self.description = description
         self.tools = {}
+        self._sub_results: dict[str, str] = {}
+        self._delegation_count = 0
 
         for t in tools:
             self.tools[t.name] = t
@@ -78,6 +80,11 @@ class Agent:
         agent_self = self
 
         def create_sub_agent(name: str, task: str, tools: str = "") -> str:
+            # ponytail: global delegation limit, per-task limits if throughput matters
+            agent_self._delegation_count += 1
+            if agent_self._delegation_count > 3:
+                return "已达到最大委托次数（3次）。请你自己直接完成任务，不要再次创建子助手。"
+
             tool_names = [t.strip() for t in tools.split(",") if t.strip()]
             sub_tools = []
             for tn in tool_names:
@@ -89,20 +96,32 @@ class Agent:
                     if t.name not in ("create_sub_agent", "final_answer")
                 ]
 
+            if name in agent_self._sub_results and agent_self._sub_results[name]:
+                task = (
+                    f"{task}\n\n"
+                    f"[上次查找结果供参考，请在此基础上继续，不要重复搜索已有信息：]\n"
+                    f"{agent_self._sub_results[name]}"
+                )
+
             sub = Agent(
                 model=agent_self.model,
                 tools=sub_tools,
                 name=name,
-                max_steps=agent_self.max_steps,
+                max_steps=min(5, agent_self.max_steps),
                 max_messages=agent_self.max_messages,
             )
-            # ponytail: 以下两段守卫暂时注释。若 LLM 频繁偷懒（原封不动转发任务），取消注释启用：
-            # 守卫 1：拒绝原封不动转发
+
             if hasattr(agent_self, "_original_task") and task.strip() == agent_self._original_task.strip():
                 return "错误：不能把用户任务原封不动转发给子助手。请先自己分析、拆解后再委托。"
+
             result = sub.run(task)
-            # 守卫 2：追加验证提示，防止 LLM 直接把子助手结果当 final_answer
+            agent_self._sub_results[name] = result
+
             result += "\n\n[系统提示：请验证以上子助手的结果，给出你自己的综合分析后再调用 final_answer。]"
+
+            if "timed out" in result.lower() or "error" in result.lower():
+                result += "\n\n[警告：子助手执行遇到问题。请不要再次创建同名子助手重试——请换用其他方式自己完成任务。]"
+            return result
             return result
 
         return Tool(
