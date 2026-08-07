@@ -410,3 +410,64 @@ def test_managed_agent_called_by_manager():
     result = manager.run("复杂任务")
     sub.run.assert_called_once_with("找资料")
     assert "任务完成" in result
+
+
+def test_create_sub_agent_tool_exists():
+    """验证 create_sub_agent 工具自动注入"""
+
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = Agent(model=model, tools=[dummy])
+    assert "create_sub_agent" in agent.tools
+    assert agent.tools["create_sub_agent"].name == "create_sub_agent"
+    assert "name" in agent.tools["create_sub_agent"].parameters["properties"]
+    assert "task" in agent.tools["create_sub_agent"].parameters["properties"]
+
+
+def test_create_sub_agent_dynamic_delegation():
+    """主 Agent 通过 create_sub_agent 动态创建子 Agent 并拿到结果"""
+
+    @tool
+    def search(q: str) -> str:
+        return f"搜索: {q}"
+
+    model = MagicMock(spec=OpenAIModel)
+    manager = Agent(model=model, tools=[search])
+
+    # Mock create_sub_agent 返回固定值，避免真实创建子 Agent
+    manager.tools["create_sub_agent"].func = MagicMock(return_value="子任务结果")
+
+    msg1 = MagicMock()
+    msg1.content = None
+    tc1 = MagicMock()
+    tc1.id = "call_create"
+    tc1.function.name = "create_sub_agent"
+    tc1.function.arguments = '{"name": "helper", "task": "找资料"}'
+    msg1.tool_calls = [tc1]
+
+    msg2 = MagicMock()
+    msg2.content = None
+    tc2 = MagicMock()
+    tc2.id = "call_done"
+    tc2.function.name = "final_answer"
+    tc2.function.arguments = '{"answer": "完成"}'
+    msg2.tool_calls = [tc2]
+
+    resp1 = MagicMock()
+    resp1.choices = [MagicMock()]
+    resp1.choices[0].message = msg1
+
+    resp2 = MagicMock()
+    resp2.choices = [MagicMock()]
+    resp2.choices[0].message = msg2
+
+    model.generate.side_effect = [resp1, resp2]
+
+    result = manager.run("复杂任务")
+    manager.tools["create_sub_agent"].func.assert_called_once_with(
+        name="helper", task="找资料"
+    )
+    assert "完成" in result

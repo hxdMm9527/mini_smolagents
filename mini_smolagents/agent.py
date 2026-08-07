@@ -66,8 +66,52 @@ class Agent:
                     func=_make_managed_call(sub),
                 )
 
+        self.tools["create_sub_agent"] = self._build_create_sub_agent_tool()
+
         if "final_answer" not in self.tools:
             self.tools["final_answer"] = _FINAL_ANSWER_TOOL
+
+    def _build_create_sub_agent_tool(self):
+        agent_self = self
+
+        def create_sub_agent(name: str, task: str, tools: str = "") -> str:
+            tool_names = [t.strip() for t in tools.split(",") if t.strip()]
+            sub_tools = []
+            for tn in tool_names:
+                if tn in agent_self.tools and tn not in ("create_sub_agent", "final_answer"):
+                    sub_tools.append(agent_self.tools[tn])
+            if not sub_tools:
+                sub_tools = [
+                    t for t in agent_self.tools.values()
+                    if t.name not in ("create_sub_agent", "final_answer")
+                ]
+
+            sub = Agent(
+                model=agent_self.model,
+                tools=sub_tools,
+                name=name,
+                max_steps=agent_self.max_steps,
+                max_messages=agent_self.max_messages,
+            )
+            return sub.run(task)
+
+        return Tool(
+            name="create_sub_agent",
+            description="创建一个临时助手来完成子任务。助手独立运行 ReAct 循环，任务完成后返回结果。适合将复杂任务拆分给专门的助手处理。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "临时助手的名称"},
+                    "task": {"type": "string", "description": "给临时助手的详细任务描述"},
+                    "tools": {
+                        "type": "string",
+                        "description": "助手可用的工具名称，逗号分隔。留空则继承主 Agent 的所有工具。",
+                    },
+                },
+                "required": ["name", "task"],
+            },
+            func=create_sub_agent,
+        )
 
     def _build_tools_schema(self):
         schema = []
