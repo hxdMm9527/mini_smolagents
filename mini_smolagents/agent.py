@@ -98,11 +98,11 @@ class Agent:
             )
             # ponytail: 以下两段守卫暂时注释。若 LLM 频繁偷懒（原封不动转发任务），取消注释启用：
             # 守卫 1：拒绝原封不动转发
-            # if hasattr(agent_self, "_original_task") and task.strip() == agent_self._original_task.strip():
-            #     return "错误：不能把用户任务原封不动转发给子助手。请先自己分析、拆解后再委托。"
+            if hasattr(agent_self, "_original_task") and task.strip() == agent_self._original_task.strip():
+                return "错误：不能把用户任务原封不动转发给子助手。请先自己分析、拆解后再委托。"
             result = sub.run(task)
             # 守卫 2：追加验证提示，防止 LLM 直接把子助手结果当 final_answer
-            # result += "\n\n[系统提示：请验证以上子助手的结果，给出你自己的综合分析后再调用 final_answer。]"
+            result += "\n\n[系统提示：请验证以上子助手的结果，给出你自己的综合分析后再调用 final_answer。]"
             return result
 
         return Tool(
@@ -148,7 +148,7 @@ class Agent:
 
     def run(self, task: str) -> str:
         # ponytail: 配合 create_sub_agent 守卫 1 使用。取消注释下方守卫后启用此行
-        # self._original_task = task
+        self._original_task = task
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": task},
