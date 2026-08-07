@@ -26,11 +26,12 @@ SYSTEM_PROMPT = """\
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=10, max_messages=30, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True):
+    def __init__(self, model, tools, max_steps=10, max_messages=30, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None):
         self.model = model
         self.max_steps = max_steps
         self.max_messages = max_messages
         self.stream = stream
+        self.system_prompt = system_prompt or SYSTEM_PROMPT
         self.console = Console()
         self.name = name
         self.description = description
@@ -199,7 +200,7 @@ class Agent:
         # ponytail: 配合 create_sub_agent 守卫 1 使用。取消注释下方守卫后启用此行
         self._original_task = task
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": task},
         ]
         self._last_messages = messages
