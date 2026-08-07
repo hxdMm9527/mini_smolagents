@@ -207,7 +207,7 @@ class Agent:
         tools_schema = self._build_tools_schema()
 
         for step in range(1, self.max_steps + 1):
-            self.console.print(Rule(f"Step {step}/{self.max_steps}", style="bold blue"))
+            self.console.print(Rule(f"[{self.name}] Step {step}/{self.max_steps}", style="bold blue"))
 
             trimmed = self._get_trimmed_messages(messages)
 
@@ -271,12 +271,12 @@ class Agent:
                         if attempt == 3:
                             result = f"Error after 3 retries: {type(e).__name__}: {e}"
 
-                action_text = Text(f"Action: {tool_name}", style="bold yellow")
+                action_text = Text(f"[{self.name}] Action: {tool_name}", style="bold yellow")
                 action_text.append(f"\nArgs: {_trunc(str(args), 200)}", style="dim")
                 self.console.print(Panel(action_text, border_style="yellow"))
 
                 result_text = Text(str(result)[:500], style="green")
-                self.console.print(Panel(result_text, border_style="green", title="Result"))
+                self.console.print(Panel(result_text, border_style="green", title=f"[{self.name}] Result"))
 
                 messages.append({
                     "role": "tool",
@@ -285,10 +285,10 @@ class Agent:
                 })
 
                 if tool_name == "final_answer":
-                    self.console.print(Panel(Text(str(result), style="bold gold1"), border_style="gold1", title="Done"))
+                    self.console.print(Panel(Text(str(result), style="bold gold1"), border_style="gold1", title=f"[{self.name}] Done"))
                     return str(result)
 
-        self.console.print(Panel(Text("达到最大步数，正在总结已有结果...", style="orange3"), border_style="orange3"))
+        self.console.print(Panel(Text(f"[{self.name}] 达到最大步数，正在总结已有结果...", style="orange3"), border_style="orange3"))
         return self._summarize_messages(self._last_messages)
 
 
@@ -391,7 +391,7 @@ class CodeAgent(Agent):
         sandbox, fa = self._build_sandbox()
 
         for step in range(1, self.max_steps + 1):
-            self.console.print(Rule(f"Step {step}/{self.max_steps}", style="bold blue"))
+            self.console.print(Rule(f"[{self.name}] Step {step}/{self.max_steps}", style="bold blue"))
 
             if self.stream:
                 response = self.model.generate(self._get_trimmed_messages(messages))
@@ -416,16 +416,16 @@ class CodeAgent(Agent):
             status, value = self._run_code(code, sandbox, fa)
             value_short = _trunc(value, 500)
             if status == "error":
-                self.console.print(Panel(Text(value_short, style="red"), border_style="red", title="Error"))
+                self.console.print(Panel(Text(value_short, style="red"), border_style="red", title=f"[{self.name}] Error"))
             elif status == "final_answer":
-                self.console.print(Panel(Text(value_short, style="bold gold1"), border_style="gold1", title="Code output"))
+                self.console.print(Panel(Text(value_short, style="bold gold1"), border_style="gold1", title=f"[{self.name}] Code output"))
             else:
-                self.console.print(Panel(Text(value_short, style="green"), border_style="green", title="Code output"))
+                self.console.print(Panel(Text(value_short, style="green"), border_style="green", title=f"[{self.name}] Code output"))
             messages.append({"role": "user", "content": value})
 
             if status == "final_answer":
-                self.console.print(Panel(Text(value, style="bold gold1"), border_style="gold1", title="Done"))
+                self.console.print(Panel(Text(value, style="bold gold1"), border_style="gold1", title=f"[{self.name}] Done"))
                 return value
 
-        self.console.print(Panel(Text("达到最大步数，正在总结已有结果...", style="orange3"), border_style="orange3"))
+        self.console.print(Panel(Text(f"[{self.name}] 达到最大步数，正在总结已有结果...", style="orange3"), border_style="orange3"))
         return self._summarize_messages(self._last_messages)
