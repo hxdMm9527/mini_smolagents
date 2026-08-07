@@ -67,12 +67,33 @@ class Agent:
 
             if self.stream:
                 full_text = ""
+                tc_buf = {}  # index -> {id, name, arguments}
                 with Live("", console=self.console, refresh_per_second=20) as live:
                     for chunk in self.model.generate_stream(trimmed, tools_schema):
                         delta = chunk.choices[0].delta
                         if delta.content:
                             full_text += delta.content
-                            live.update(Markdown(full_text))
+                            live.update(Markdown(full_text) if full_text.strip() else "")
+                        if delta.tool_calls:
+                            for tc in delta.tool_calls:
+                                idx = tc.index
+                                if idx not in tc_buf:
+                                    tc_buf[idx] = {"id": "", "name": "", "arguments": ""}
+                                if tc.id:
+                                    tc_buf[idx]["id"] = tc.id
+                                if tc.function:
+                                    if tc.function.name:
+                                        tc_buf[idx]["name"] = tc.function.name
+                                    if tc.function.arguments:
+                                        tc_buf[idx]["arguments"] += tc.function.arguments
+                            calls_md = ""
+                            for i in sorted(tc_buf.keys()):
+                                b = tc_buf[i]
+                                calls_md += f"\n\n🔧 **{b['name']}**"
+                                if b["arguments"]:
+                                    calls_md += f"\n```json\n{b['arguments']}\n```"
+                            display = (full_text + calls_md).strip()
+                            live.update(Markdown(display) if display else "")
                 response = self.model.generate(trimmed, tools_schema)
                 msg = response.choices[0].message
             else:
