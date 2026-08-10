@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from typing import AsyncGenerator
+from typing import Generator
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -18,7 +18,8 @@ def sse(event: dict) -> str:
     return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-async def _event_gen(agent_id: str, message: str, session_id: str) -> AsyncGenerator[str, None]:
+def _event_gen(agent_id: str, message: str, session_id: str) -> Generator[str, None, None]:
+    # 同步 generator：StreamingResponse 会在线程池中迭代，避免阻塞事件循环
     yield sse({"type": "session", "session_id": session_id})
     agent = _AGENTS.get(agent_id)
     if agent is None:

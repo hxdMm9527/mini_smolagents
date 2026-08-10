@@ -7,11 +7,14 @@ from .tools import tool
 ALLOWED_IMPORTS = ["math", "json", "re", "datetime", "random", "collections"]
 ALLOWED_BUILTINS = {
     "abs": abs, "all": all, "any": any, "bool": bool, "dict": dict,
-    "enumerate": enumerate, "filter": filter, "float": float, "int": int,
-    "isinstance": isinstance, "len": len, "list": list, "map": map, "max": max, "min": min,
+    "dir": dir, "enumerate": enumerate, "filter": filter, "float": float,
+    "getattr": getattr, "int": int, "isinstance": isinstance, "len": len,
+    "list": list, "map": map, "max": max, "min": min,
     "print": print, "range": range, "round": round, "set": set,
     "sorted": sorted, "str": str, "sum": sum, "tuple": tuple, "type": type,
     "zip": zip, "True": True, "False": False, "None": None,
+    "Exception": Exception, "TypeError": TypeError, "ValueError": ValueError,
+    "KeyError": KeyError, "IndexError": IndexError, "AttributeError": AttributeError,
 }
 
 _real_import = __import__

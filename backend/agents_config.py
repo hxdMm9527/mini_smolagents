@@ -38,6 +38,17 @@ PM_PROMPT = """\
 不要自己写代码，分给团队成员做。审核员是必须环节，不能跳过。\
 """
 
+MAIN_PROMPT = """\
+你是用户的专属助手。你的工作方式：
+1. 先理解用户的任务，自己决定完成方式，不依赖固定流程
+2. 简单任务（问候、闲聊、直接可答的问题）：直接给出答案，调用 final_answer 结束
+3. 需要信息：用 web_search 搜索
+4. 需要计算/数据处理/写代码：用 python_interpreter 执行
+5. 任务复杂时：可以拆解并调用 create_sub_agent 创建子助手分担，也可以自己一步步完成
+6. 完成任务后用 final_answer 返回最终结果
+不要为了调用工具而调用工具。能直接回答就直接回答。\
+"""
+
 
 def _model():
     return OpenAIModel()
@@ -75,11 +86,22 @@ def build_agents() -> dict[str, Agent]:
         memory=MEMORY,
     )
 
+    main = Agent(
+        model=model,
+        tools=[web_search, python_interpreter],
+        name="助手",
+        description="你的专属助手，自己决定如何完成任何任务：直接回答、搜索资料、执行代码或派子助手。",
+        system_prompt=MAIN_PROMPT,
+        registry=REGISTRY,
+        memory=MEMORY,
+    )
+
+    REGISTRY.register(main, capabilities=["general_assistant", "web_search", "code", "task_decomposition"])
     REGISTRY.register(pm, capabilities=["project_management", "task_decomposition", "code_review_team"])
     REGISTRY.register(developer, capabilities=["code", "debug"])
     REGISTRY.register(reviewer, capabilities=["review"])
 
-    return {"PM": pm, "developer": developer, "reviewer": reviewer}
+    return {"助手": main, "PM": pm, "developer": developer, "reviewer": reviewer}
 
 
 if __name__ == "__main__":

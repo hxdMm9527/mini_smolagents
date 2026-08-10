@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 from contextlib import redirect_stderr, redirect_stdout
 
 if sys.stdout.encoding.lower() != "utf-8":
@@ -152,6 +153,9 @@ class Agent:
         if self.registry:
             for card in self.registry.list_cards():
                 if card.name in self.tools:
+                    continue
+                if not re.fullmatch(r"[a-zA-Z0-9_-]+", card.name):
+                    # 中文名 Agent 不作为可调用工具暴露（DeepSeek 要求工具名 ^[a-zA-Z0-9_-]+$）
                     continue
                 schema.append({
                     "type": "function",
@@ -317,6 +321,68 @@ class Agent:
             except Exception:
                 pass
 
+    def _generate_stream(self, messages, tools_schema, delegation_id=None):
+        """流式调用 LLM。yield token 事件，最终返回组装好的 message。
+
+        - 有 generate_stream 时：逐 token yield {"type":"token","content":...}
+        - 无流式接口（测试 FakeModel）时：一次性 yield 完整 thought
+        """
+        if not hasattr(self.model, "generate_stream"):
+            response = self.model.generate(messages, tools_schema)
+            msg = response.choices[0].message
+            text = msg.content or ""
+            if text:
+                ev = self._event("thought", content=text)
+                if delegation_id:
+                    ev["delegation_id"] = delegation_id
+                yield ev
+            return msg
+
+        stream = self.model.generate_stream(messages, tools_schema)
+        text = ""
+        tool_calls = {}
+        order = []
+
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta is None:
+                continue
+            if delta.content:
+                text += delta.content
+                ev = self._event("token", content=delta.content)
+                if delegation_id:
+                    ev["delegation_id"] = delegation_id
+                yield ev
+            for tc in delta.tool_calls or []:
+                idx = tc.index
+                if idx not in tool_calls:
+                    tool_calls[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                    order.append(idx)
+                if tc.id:
+                    tool_calls[idx]["id"] = tc.id
+                if tc.function:
+                    if tc.function.name:
+                        tool_calls[idx]["function"]["name"] += tc.function.name
+                    if tc.function.arguments:
+                        tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+
+        tcs = None
+        if order:
+            tcs = [
+                SimpleNamespace(
+                    id=tool_calls[i]["id"],
+                    type="function",
+                    function=SimpleNamespace(
+                        name=tool_calls[i]["function"]["name"],
+                        arguments=tool_calls[i]["function"]["arguments"],
+                    ),
+                )
+                for i in order
+            ]
+        return SimpleNamespace(content=text or None, tool_calls=tcs)
+
     def run_stream(self, task: str, delegation_id: str | None = None):
         """核心执行逻辑的 generator。只 yield 事件，不打印。
 
@@ -342,21 +408,28 @@ class Agent:
         ]
         self._last_messages = messages
 
+        idle_steps = 0
         for step in range(1, self.max_steps + 1):
             yield self._event("step", step=step, max_steps=self.max_steps)
 
             trimmed = self._get_trimmed_messages(messages)
             tools_schema = self._build_tools_schema()
-            response = self.model.generate(trimmed, tools_schema)
-            msg = response.choices[0].message
+            msg = yield from self._generate_stream(trimmed, tools_schema, delegation_id=delegation_id)
             text = msg.content or ""
 
-            if text:
-                yield self._event("thought", content=text)
-
             if not msg.tool_calls:
+                idle_steps += 1
                 messages.append({"role": "assistant", "content": text})
+                # ponytail: 连续空转兜底，避免问候语/无任务时空转到 max_steps
+                if idle_steps >= 2:
+                    note = f"[{self.name}] 连续多步未调用工具，直接结束。"
+                    final = text or self._summarize_messages(messages)
+                    yield self._event("note", content=note)
+                    yield self._event("done", content=final, stored=False, session_id=self.session_id)
+                    self._save_checkpoint()
+                    return
                 continue
+            idle_steps = 0
 
             tool_calls_dict = [
                 {
@@ -441,7 +514,7 @@ class Agent:
     def _print_event(self, event: dict):
         etype = event["type"]
         who = event.get("agent", self.name)
-        did = f" (sub:{event['delegation_id'][:8]})" if "delegation_id" in event else ""
+        did = f" (sub:{event['delegation_id'][:8]})" if event.get("delegation_id") else ""
         if etype == "step":
             self.console.print(Rule(f"[{who}] Step {event['step']}/{event['max_steps']}{did}", style="bold blue"))
         elif etype == "thought":
@@ -454,6 +527,9 @@ class Agent:
                     live.update(Markdown(text))
             else:
                 self.console.print(Markdown(text))
+        elif etype == "token":
+            # ponytail: 终端不做逐 token 打字机，直接忽略增量（run() 靠 done 取结果）
+            pass
         elif etype == "action":
             action_text = Text(f"[{who}] Action: {event['tool']}", style="bold yellow")
             action_text.append(f"\nArgs: {_trunc(str(event['args']), 200)}", style="dim")

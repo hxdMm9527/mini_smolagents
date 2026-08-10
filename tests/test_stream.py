@@ -130,6 +130,26 @@ def test_run_returns_result(tmpdir):
     assert result == "最终答案"
 
 
+def test_idle_guard_ends_early(tmpdir):
+    """连续无 tool_calls 时应在 2 步内结束，不空转到 max_steps。"""
+    script = [
+        {"content": "你好呀"},
+        {"content": "我是助手的回答，虽然没有调用工具，但可以直接给用户"},
+    ]
+    agent = Agent(model=FakeModel(script), tools=[], name="tester", max_steps=10)
+    events = collect_stream(agent, "你好")
+
+    types = [e["type"] for e in events]
+    assert types[0] == "step"
+    assert "done" in types
+    # 空转守卫在连续 2 步无 tool_calls 后触发，步数远小于 max_steps
+    step_count = sum(1 for e in events if e["type"] == "step")
+    assert step_count == 2, f"expected 2 steps, got {step_count}"
+    done = events[-1]
+    assert done["type"] == "done"
+    assert done["content"] == "我是助手的回答，虽然没有调用工具，但可以直接给用户"
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         base = Path(d)
@@ -138,4 +158,5 @@ if __name__ == "__main__":
         test_memory_injection_into_system_prompt(base)
         test_checkpoint_saved(base)
         test_run_returns_result(base)
+        test_idle_guard_ends_early(base)
         print("\n=== ALL STREAM TESTS PASSED ===")

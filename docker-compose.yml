@@ -12,4 +12,8 @@ services:
       - ./chroma_db:/app/chroma_db
       # 复用宿主已下载的 ChromaDB embedding 模型缓存，避免容器内重新下载
       - ${USERPROFILE}/.cache/chroma:/root/.cache/chroma
+      # 源码热重载：改 Python 代码无需重建镜像
+      - ./backend:/app/backend
+      - ./mini_smolagents:/app/mini_smolagents
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
     restart: unless-stopped
