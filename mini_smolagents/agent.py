@@ -4,6 +4,7 @@ import re
 import sys
 import threading
 import time
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 
 if sys.stdout.encoding.lower() != "utf-8":
@@ -107,55 +108,12 @@ class Agent:
         agent_self = self
 
         def create_sub_agent(name: str, task: str, tools: str = "") -> str:
-            # ponytail: global delegation limit, per-task limits if throughput matters
-            agent_self._delegation_count += 1
-            if agent_self._delegation_count > 3:
-                return "已达到最大委托次数（3次）。请你自己直接完成任务，不要再次创建子助手。"
-
-            tool_names = [t.strip() for t in tools.split(",") if t.strip()]
-            sub_tools = []
-            for tn in tool_names:
-                if tn in agent_self.tools and tn not in ("create_sub_agent", "final_answer"):
-                    sub_tools.append(agent_self.tools[tn])
-            if not sub_tools:
-                sub_tools = [
-                    t for t in agent_self.tools.values()
-                    if t.name not in ("create_sub_agent", "final_answer")
-                ]
-
-            if name in agent_self._sub_results and agent_self._sub_results[name]:
-                task = (
-                    f"{task}\n\n"
-                    f"[上次查找结果供参考，请在此基础上继续，不要重复搜索已有信息：]\n"
-                    f"{agent_self._sub_results[name]}"
-                )
-
-            if hasattr(agent_self, "_original_task") and task.strip() == agent_self._original_task.strip():
-                return "错误：不能把用户任务原封不动转发给子助手。请先自己分析、拆解后再委托。"
-
-            registry = agent_self._ensure_registry()
-            if registry.find(name):
-                result = agent_self._delegate(name, task)
-            else:
-                sub = Agent(
-                    model=agent_self.model,
-                    tools=sub_tools,
-                    name=name,
-                    max_steps=min(5, agent_self.max_steps),
-                    max_messages=agent_self.max_messages,
-                    allow_delegation=False,
-                    registry=registry,
-                )
-                registry.register(sub)
-                result = agent_self._delegate(name, task)
+            agent, final_task, err = agent_self._prepare_sub_agent(name, task, tools)
+            if err:
+                return err
+            result = agent_self._delegate(name, final_task)
             agent_self._sub_results[name] = result
-
-            result += "\n\n[系统提示：请验证以上子助手的结果，给出你自己的综合分析后再调用 final_answer。]"
-
-            if "timed out" in result.lower() or "error" in result.lower():
-                result += "\n\n[警告：子助手执行遇到问题。请不要再次创建同名子助手重试——请换用其他方式自己完成任务。]"
-            return result
-            return result
+            return agent_self._finalize_sub_result(result)
 
         return Tool(
             name="create_sub_agent",
@@ -254,17 +212,103 @@ class Agent:
         except Exception:
             return "\n".join(parts[:3]) + "\n\n(超时，以上为部分结果)"
 
-    def _inject_memory(self, task: str) -> str:
+    def _retrieve_memory(self, task: str) -> list[dict]:
         if not self.memory:
-            return self.system_prompt
+            return []
         try:
-            history = self.memory.search(task, top_k=3)
+            return self.memory.search(task, top_k=3)
         except Exception:
-            return self.system_prompt
+            return []
+
+    def _inject_memory(self, task: str) -> str:
+        history = self._retrieve_memory(task)
         if not history:
             return self.system_prompt
         mem_lines = "\n".join(f"- {h['task']} → {h['document'][:200]}" for h in history)
         return f"{self.system_prompt}\n\n[相关历史记忆，供参考：]\n{mem_lines}"
+
+    def _event(self, type_: str, **kw) -> dict:
+        ev = {"type": type_, "agent": self.name}
+        ev.update(kw)
+        return ev
+
+    def _is_agent_call(self, tool_name: str) -> bool:
+        return tool_name == "create_sub_agent" or bool(self.registry and self.registry.find(tool_name))
+
+    def _stream_delegate(self, tool_name: str, args: dict, delegation_id: str):
+        """嵌套透传子 Agent 的 run_stream，返回其最终结果。"""
+        if tool_name == "create_sub_agent":
+            agent, final_task, err = self._prepare_sub_agent(
+                args.get("name", ""), args.get("task", ""), args.get("tools", "")
+            )
+            if err:
+                return err
+            result = ""
+            for ev in agent.run_stream(final_task, delegation_id=delegation_id):
+                yield ev
+                if ev["type"] == "done":
+                    result = ev["content"]
+            result = self._finalize_sub_result(result)
+            self._sub_results[agent.name] = result
+            return result
+
+        agent = self.registry.get_agent(tool_name) if self.registry else None
+        if agent is None:
+            return f"子助手执行失败: Agent '{tool_name}' not registered"
+        result = ""
+        for ev in agent.run_stream(args.get("task", ""), delegation_id=delegation_id):
+            yield ev
+            if ev["type"] == "done":
+                result = ev["content"]
+        return result
+
+    def _finalize_sub_result(self, result: str) -> str:
+        result += "\n\n[系统提示：请验证以上子助手的结果，给出你自己的综合分析后再调用 final_answer。]"
+        if "timed out" in result.lower() or "error" in result.lower():
+            result += "\n\n[警告：子助手执行遇到问题。请不要再次创建同名子助手重试——请换用其他方式自己完成任务。]"
+        return result
+
+    def _prepare_sub_agent(self, name: str, task: str, tools_str: str = ""):
+        """守卫检查 + 创建/复用子 Agent。返回 (agent, final_task, error)。"""
+        self._delegation_count += 1
+        if self._delegation_count > 3:
+            return None, None, "已达到最大委托次数（3次）。请你自己直接完成任务，不要再次创建子助手。"
+
+        if hasattr(self, "_original_task") and task.strip() == self._original_task.strip():
+            return None, None, "错误：不能把用户任务原封不动转发给子助手。请先自己分析、拆解后再委托。"
+
+        tool_names = [t.strip() for t in tools_str.split(",") if t.strip()]
+        sub_tools = []
+        for tn in tool_names:
+            if tn in self.tools and tn not in ("create_sub_agent", "final_answer"):
+                sub_tools.append(self.tools[tn])
+        if not sub_tools:
+            sub_tools = [
+                t for t in self.tools.values()
+                if t.name not in ("create_sub_agent", "final_answer")
+            ]
+
+        if name in self._sub_results and self._sub_results[name]:
+            task = (
+                f"{task}\n\n"
+                f"[上次查找结果供参考，请在此基础上继续，不要重复搜索已有信息：]\n"
+                f"{self._sub_results[name]}"
+            )
+
+        registry = self._ensure_registry()
+        agent = registry.get_agent(name)
+        if agent is None:
+            agent = Agent(
+                model=self.model,
+                tools=sub_tools,
+                name=name,
+                max_steps=min(5, self.max_steps),
+                max_messages=self.max_messages,
+                allow_delegation=False,
+                registry=registry,
+            )
+            registry.register(agent)
+        return agent, task, None
 
     def _save_checkpoint(self):
         if self.checkpoint and self.session_id:
@@ -273,19 +317,25 @@ class Agent:
             except Exception:
                 pass
 
-    def run_stream(self, task: str):
+    def run_stream(self, task: str, delegation_id: str | None = None):
         """核心执行逻辑的 generator。只 yield 事件，不打印。
 
         事件类型：
         {"type":"step","step":n,"max_steps":m}
+        {"type":"memory","hits":[...]}
         {"type":"thought","content":...}
         {"type":"action","tool":...,"args":{...}}
         {"type":"result","content":...}
         {"type":"note","content":...}
         {"type":"done","content":...,"stored":bool}
+
+        子 Agent 事件透传：事件带 "agent" 和 "delegation_id" 字段。
         """
         # ponytail: 配合 create_sub_agent 守卫 1 使用。取消注释下方守卫后启用此行
         self._original_task = task
+        history = self._retrieve_memory(task)
+        if history:
+            yield self._event("memory", hits=history)
         messages = [
             {"role": "system", "content": self._inject_memory(task)},
             {"role": "user", "content": task},
@@ -293,7 +343,7 @@ class Agent:
         self._last_messages = messages
 
         for step in range(1, self.max_steps + 1):
-            yield {"type": "step", "step": step, "max_steps": self.max_steps}
+            yield self._event("step", step=step, max_steps=self.max_steps)
 
             trimmed = self._get_trimmed_messages(messages)
             tools_schema = self._build_tools_schema()
@@ -302,7 +352,7 @@ class Agent:
             text = msg.content or ""
 
             if text:
-                yield {"type": "thought", "content": text}
+                yield self._event("thought", content=text)
 
             if not msg.tool_calls:
                 messages.append({"role": "assistant", "content": text})
@@ -330,7 +380,23 @@ class Agent:
                 raw_args = tc.function.arguments
                 args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
 
-                yield {"type": "action", "tool": tool_name, "args": args}
+                if self._is_agent_call(tool_name):
+                    did = str(uuid.uuid4())
+                    yield self._event("action", tool=tool_name, args=args, delegation_id=did)
+                    result = ""
+                    try:
+                        result = yield from self._stream_delegate(tool_name, args, did)
+                    except Exception as e:
+                        result = f"Error: {type(e).__name__}: {e}"
+                    yield self._event("result", content=str(result), delegation_id=did)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": str(result),
+                    })
+                    continue
+
+                yield self._event("action", tool=tool_name, args=args)
 
                 result = None
                 for attempt in range(1, 4):
@@ -341,7 +407,7 @@ class Agent:
                         if attempt == 3:
                             result = f"Error after 3 retries: {type(e).__name__}: {e}"
 
-                yield {"type": "result", "content": str(result)}
+                yield self._event("result", content=str(result))
 
                 messages.append({
                     "role": "tool",
@@ -355,27 +421,29 @@ class Agent:
                     if self.memory and should_store(task, final):
                         self.memory.add(task, final)
                         stored = True
-                    yield {"type": "done", "content": final, "stored": stored}
+                    yield self._event("done", content=final, stored=stored, session_id=self.session_id)
                     self._save_checkpoint()
                     return
 
         summary = self._summarize_messages(self._last_messages)
-        yield {"type": "note", "content": f"[{self.name}] 达到最大步数，正在总结已有结果..."}
-        yield {"type": "done", "content": summary, "stored": False}
+        yield self._event("note", content=f"[{self.name}] 达到最大步数，正在总结已有结果...")
+        yield self._event("done", content=summary, stored=False, session_id=self.session_id)
         self._save_checkpoint()
 
     def run(self, task: str) -> str:
         result = ""
         for event in self.run_stream(task):
             self._print_event(event)
-            if event["type"] == "done":
+            if event["type"] == "done" and "delegation_id" not in event:
                 result = event["content"]
         return result
 
     def _print_event(self, event: dict):
         etype = event["type"]
+        who = event.get("agent", self.name)
+        did = f" (sub:{event['delegation_id'][:8]})" if "delegation_id" in event else ""
         if etype == "step":
-            self.console.print(Rule(f"[{self.name}] Step {event['step']}/{event['max_steps']}", style="bold blue"))
+            self.console.print(Rule(f"[{who}] Step {event['step']}/{event['max_steps']}{did}", style="bold blue"))
         elif etype == "thought":
             text = event["content"]
             if self.stream:
@@ -387,15 +455,15 @@ class Agent:
             else:
                 self.console.print(Markdown(text))
         elif etype == "action":
-            action_text = Text(f"[{self.name}] Action: {event['tool']}", style="bold yellow")
+            action_text = Text(f"[{who}] Action: {event['tool']}", style="bold yellow")
             action_text.append(f"\nArgs: {_trunc(str(event['args']), 200)}", style="dim")
             self.console.print(Panel(action_text, border_style="yellow"))
         elif etype == "result":
-            self.console.print(Panel(Text(str(event["content"])[:500], style="green"), border_style="green", title=f"[{self.name}] Result"))
+            self.console.print(Panel(Text(str(event["content"])[:500], style="green"), border_style="green", title=f"[{who}] Result"))
         elif etype == "note":
             self.console.print(Panel(Text(event["content"], style="orange3"), border_style="orange3"))
         elif etype == "done":
-            self.console.print(Panel(Text(str(event["content"]), style="bold gold1"), border_style="gold1", title=f"[{self.name}] Done"))
+            self.console.print(Panel(Text(str(event["content"]), style="bold gold1"), border_style="gold1", title=f"[{who}] Done"))
 
 
 class _FinalAnswer(Exception):

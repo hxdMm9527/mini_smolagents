@@ -1,0 +1,15 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: ms-backend
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./chroma_db:/app/chroma_db
+      # 复用宿主已下载的 ChromaDB embedding 模型缓存，避免容器内重新下载
+      - ${USERPROFILE}/.cache/chroma:/root/.cache/chroma
+    restart: unless-stopped

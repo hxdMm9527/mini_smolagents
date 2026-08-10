@@ -5,3 +5,5 @@ dist/
 .pytest_cache/
 .opencode/
 openspec/
+chroma_db/
+.memory/
