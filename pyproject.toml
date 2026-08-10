@@ -12,6 +12,7 @@ dependencies = [
     "ddgs>=9.0",
     "python-dotenv",
     "rich>=13.0",
+    "chromadb>=0.4",
 ]
 
 [tool.setuptools.packages.find]

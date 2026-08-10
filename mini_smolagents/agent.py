@@ -17,6 +17,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from .default_tools import ALLOWED_BUILTINS, ALLOWED_IMPORTS, _safe_import, final_answer as _FINAL_ANSWER_TOOL
+from .memory import should_store
 from .types import Tool
 
 SYSTEM_PROMPT = """\
@@ -30,7 +31,7 @@ SYSTEM_PROMPT = """\
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=10, max_messages=30, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None):
+    def __init__(self, model, tools, max_steps=10, max_messages=30, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None):
         self.model = model
         self.max_steps = max_steps
         self.max_messages = max_messages
@@ -39,6 +40,10 @@ class Agent:
         self.console = Console(force_terminal=True)
         self.name = name
         self.description = description
+        self.memory = memory
+        self.checkpoint = checkpoint
+        self.session_id = session_id
+        self.registry = registry
         self.tools = {}
         self._sub_results: dict[str, str] = {}
         self._delegation_count = 0
@@ -54,33 +59,49 @@ class Agent:
                     raise ValueError("每个被管理的 Agent 必须有 name 和 description")
                 if sub_name in self.tools:
                     raise ValueError(f"被管理的 Agent 名称 '{sub_name}' 与已有工具重名")
-
-                def _make_managed_call(_sub):
-                    def _call(task: str = "") -> str:
-                        return _sub.run(task)
-                    return _call
-
-                self.tools[sub_name] = Tool(
-                    name=sub_name,
-                    description=sub_desc,
-                    parameters={
-                        "type": "object",
-                        "properties": {
-                            "task": {
-                                "type": "string",
-                                "description": f"给 {sub_name} 的详细任务描述",
-                            }
-                        },
-                        "required": ["task"],
-                    },
-                    func=_make_managed_call(sub),
-                )
+                self._ensure_registry().register(sub)
+                self.tools[sub_name] = self._build_sub_agent_tool(sub_name, sub_desc)
 
         if allow_delegation:
             self.tools["create_sub_agent"] = self._build_create_sub_agent_tool()
 
         if "final_answer" not in self.tools:
             self.tools["final_answer"] = _FINAL_ANSWER_TOOL
+
+    def _ensure_registry(self):
+        if self.registry is None:
+            from .a2a import AgentRegistry
+            self.registry = AgentRegistry()
+        return self.registry
+
+    def _delegate(self, target: str, task: str) -> str:
+        from .a2a import Task
+        artifact = self._ensure_registry().delegate(Task(description=task, target_agent=target))
+        if artifact.status == "success":
+            return artifact.content
+        return f"子助手执行失败: {artifact.error}"
+
+    def _build_sub_agent_tool(self, sub_name: str, sub_desc: str) -> Tool:
+        agent_self = self
+
+        def _call(task: str = "") -> str:
+            return agent_self._delegate(sub_name, task)
+
+        return Tool(
+            name=sub_name,
+            description=sub_desc,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": f"给 {sub_name} 的详细任务描述",
+                    }
+                },
+                "required": ["task"],
+            },
+            func=_call,
+        )
 
     def _build_create_sub_agent_tool(self):
         agent_self = self
@@ -109,22 +130,24 @@ class Agent:
                     f"{agent_self._sub_results[name]}"
                 )
 
-            sub = Agent(
-                model=agent_self.model,
-                tools=sub_tools,
-                name=name,
-                max_steps=min(5, agent_self.max_steps),
-                max_messages=agent_self.max_messages,
-                allow_delegation=False,
-            )
-
             if hasattr(agent_self, "_original_task") and task.strip() == agent_self._original_task.strip():
                 return "错误：不能把用户任务原封不动转发给子助手。请先自己分析、拆解后再委托。"
 
-            try:
-                result = sub.run(task)
-            except Exception as e:
-                result = f"子助手执行失败: {type(e).__name__}: {e}"
+            registry = agent_self._ensure_registry()
+            if registry.find(name):
+                result = agent_self._delegate(name, task)
+            else:
+                sub = Agent(
+                    model=agent_self.model,
+                    tools=sub_tools,
+                    name=name,
+                    max_steps=min(5, agent_self.max_steps),
+                    max_messages=agent_self.max_messages,
+                    allow_delegation=False,
+                    registry=registry,
+                )
+                registry.register(sub)
+                result = agent_self._delegate(name, task)
             agent_self._sub_results[name] = result
 
             result += "\n\n[系统提示：请验证以上子助手的结果，给出你自己的综合分析后再调用 final_answer。]"
@@ -168,7 +191,38 @@ class Agent:
                     "parameters": t.parameters,
                 },
             })
+        if self.registry:
+            for card in self.registry.list_cards():
+                if card.name in self.tools:
+                    continue
+                schema.append({
+                    "type": "function",
+                    "function": {
+                        "name": card.name,
+                        "description": (
+                            f"{card.description}"
+                            + (f"。能力：{', '.join(card.capabilities)}" if card.capabilities else "")
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "task": {
+                                    "type": "string",
+                                    "description": f"给 {card.name} 的详细任务描述",
+                                }
+                            },
+                            "required": ["task"],
+                        },
+                    },
+                })
         return schema
+
+    def _execute_tool(self, name: str, args: dict) -> str:
+        if name in self.tools:
+            return self.tools[name].func(**args)
+        if self.registry and self.registry.find(name):
+            return self._delegate(name, args["task"])
+        return f"Error: unknown tool '{name}'"
 
     def _get_trimmed_messages(self, messages):
         if len(messages) <= self.max_messages:
@@ -200,47 +254,57 @@ class Agent:
         except Exception:
             return "\n".join(parts[:3]) + "\n\n(超时，以上为部分结果)"
 
-    def run(self, task: str) -> str:
+    def _inject_memory(self, task: str) -> str:
+        if not self.memory:
+            return self.system_prompt
+        try:
+            history = self.memory.search(task, top_k=3)
+        except Exception:
+            return self.system_prompt
+        if not history:
+            return self.system_prompt
+        mem_lines = "\n".join(f"- {h['task']} → {h['document'][:200]}" for h in history)
+        return f"{self.system_prompt}\n\n[相关历史记忆，供参考：]\n{mem_lines}"
+
+    def _save_checkpoint(self):
+        if self.checkpoint and self.session_id:
+            try:
+                self.checkpoint.save(self.session_id, self._last_messages)
+            except Exception:
+                pass
+
+    def run_stream(self, task: str):
+        """核心执行逻辑的 generator。只 yield 事件，不打印。
+
+        事件类型：
+        {"type":"step","step":n,"max_steps":m}
+        {"type":"thought","content":...}
+        {"type":"action","tool":...,"args":{...}}
+        {"type":"result","content":...}
+        {"type":"note","content":...}
+        {"type":"done","content":...,"stored":bool}
+        """
         # ponytail: 配合 create_sub_agent 守卫 1 使用。取消注释下方守卫后启用此行
         self._original_task = task
         messages = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": self._inject_memory(task)},
             {"role": "user", "content": task},
         ]
         self._last_messages = messages
-        tools_schema = self._build_tools_schema()
 
         for step in range(1, self.max_steps + 1):
-            self.console.print(Rule(f"[{self.name}] Step {step}/{self.max_steps}", style="bold blue"))
+            yield {"type": "step", "step": step, "max_steps": self.max_steps}
 
             trimmed = self._get_trimmed_messages(messages)
+            tools_schema = self._build_tools_schema()
+            response = self.model.generate(trimmed, tools_schema)
+            msg = response.choices[0].message
+            text = msg.content or ""
 
-            if self.stream:
-                response = self.model.generate(trimmed, tools_schema)
-                msg = response.choices[0].message
-                text = msg.content or ""
-
-                if msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        text += f"\n\n🔧 **{tc.function.name}**"
-                        args_str = tc.function.arguments
-                        if isinstance(args_str, str):
-                            text += f"\n```json\n{args_str}\n```"
-
-                if text:
-                    with Live("", console=self.console, refresh_per_second=60) as live:
-                        for i in range(1, len(text) + 1, 2):
-                            live.update(Markdown(text[:i]))
-                            time.sleep(0.01)
-                        live.update(Markdown(text))
-            else:
-                response = self.model.generate(trimmed, tools_schema)
-                msg = response.choices[0].message
-                if msg.content:
-                    self.console.print(Markdown(msg.content))
+            if text:
+                yield {"type": "thought", "content": text}
 
             if not msg.tool_calls:
-                text = msg.content or ""
                 messages.append({"role": "assistant", "content": text})
                 continue
 
@@ -266,21 +330,18 @@ class Agent:
                 raw_args = tc.function.arguments
                 args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
 
+                yield {"type": "action", "tool": tool_name, "args": args}
+
                 result = None
                 for attempt in range(1, 4):
                     try:
-                        result = self.tools[tool_name].func(**args)
+                        result = self._execute_tool(tool_name, args)
                         break
                     except Exception as e:
                         if attempt == 3:
                             result = f"Error after 3 retries: {type(e).__name__}: {e}"
 
-                action_text = Text(f"[{self.name}] Action: {tool_name}", style="bold yellow")
-                action_text.append(f"\nArgs: {_trunc(str(args), 200)}", style="dim")
-                self.console.print(Panel(action_text, border_style="yellow"))
-
-                result_text = Text(str(result)[:500], style="green")
-                self.console.print(Panel(result_text, border_style="green", title=f"[{self.name}] Result"))
+                yield {"type": "result", "content": str(result)}
 
                 messages.append({
                     "role": "tool",
@@ -289,11 +350,52 @@ class Agent:
                 })
 
                 if tool_name == "final_answer":
-                    self.console.print(Panel(Text(str(result), style="bold gold1"), border_style="gold1", title=f"[{self.name}] Done"))
-                    return str(result)
+                    final = str(result)
+                    stored = False
+                    if self.memory and should_store(task, final):
+                        self.memory.add(task, final)
+                        stored = True
+                    yield {"type": "done", "content": final, "stored": stored}
+                    self._save_checkpoint()
+                    return
 
-        self.console.print(Panel(Text(f"[{self.name}] 达到最大步数，正在总结已有结果...", style="orange3"), border_style="orange3"))
-        return self._summarize_messages(self._last_messages)
+        summary = self._summarize_messages(self._last_messages)
+        yield {"type": "note", "content": f"[{self.name}] 达到最大步数，正在总结已有结果..."}
+        yield {"type": "done", "content": summary, "stored": False}
+        self._save_checkpoint()
+
+    def run(self, task: str) -> str:
+        result = ""
+        for event in self.run_stream(task):
+            self._print_event(event)
+            if event["type"] == "done":
+                result = event["content"]
+        return result
+
+    def _print_event(self, event: dict):
+        etype = event["type"]
+        if etype == "step":
+            self.console.print(Rule(f"[{self.name}] Step {event['step']}/{event['max_steps']}", style="bold blue"))
+        elif etype == "thought":
+            text = event["content"]
+            if self.stream:
+                with Live("", console=self.console, refresh_per_second=60) as live:
+                    for i in range(1, len(text) + 1, 2):
+                        live.update(Markdown(text[:i]))
+                        time.sleep(0.01)
+                    live.update(Markdown(text))
+            else:
+                self.console.print(Markdown(text))
+        elif etype == "action":
+            action_text = Text(f"[{self.name}] Action: {event['tool']}", style="bold yellow")
+            action_text.append(f"\nArgs: {_trunc(str(event['args']), 200)}", style="dim")
+            self.console.print(Panel(action_text, border_style="yellow"))
+        elif etype == "result":
+            self.console.print(Panel(Text(str(event["content"])[:500], style="green"), border_style="green", title=f"[{self.name}] Result"))
+        elif etype == "note":
+            self.console.print(Panel(Text(event["content"], style="orange3"), border_style="orange3"))
+        elif etype == "done":
+            self.console.print(Panel(Text(str(event["content"]), style="bold gold1"), border_style="gold1", title=f"[{self.name}] Done"))
 
 
 class _FinalAnswer(Exception):
