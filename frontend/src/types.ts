@@ -22,6 +22,11 @@ export interface SessionMessage {
   content: string
 }
 
+export interface Turn {
+  user: string
+  events: StreamEvent[]
+}
+
 export interface BaseEvent {
   type: string
   agent?: string

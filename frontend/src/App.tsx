@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AgentInfo, MemoryHit, SessionMessage } from './types'
+import type { AgentInfo, MemoryHit, SessionMessage, Turn } from './types'
 import Header from './components/Header'
 import ChatPanel from './components/ChatPanel'
 import MemoryPanel from './components/MemoryPanel'
@@ -12,7 +12,8 @@ export default function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') ?? 'light')
   const [resumeSession, setResumeSession] = useState<{
     session_id: string
-    messages: SessionMessage[]
+    turns?: Turn[]
+    messages?: SessionMessage[]
   } | null>(null)
 
   useEffect(() => {
@@ -33,9 +34,19 @@ export default function App() {
   const resume = (session_id: string) => {
     fetch(`/api/sessions/${session_id}`)
       .then((r) => r.json())
-      .then((data: { session_id: string; messages: SessionMessage[] }) => {
-        setResumeSession({ session_id: data.session_id, messages: data.messages })
-      })
+      .then(
+        (data: {
+          session_id: string
+          turns?: Turn[]
+          messages?: SessionMessage[]
+        }) => {
+          setResumeSession({
+            session_id: data.session_id,
+            turns: data.turns,
+            messages: data.messages,
+          })
+        },
+      )
       .catch(() => {})
   }
 

@@ -1,18 +1,24 @@
 import { useRef, useEffect, useState } from 'react'
 import { useStreamChat } from '../useStreamChat'
-import type { MemoryHit, SessionMessage } from '../types'
+import type { MemoryHit, SessionMessage, Turn } from '../types'
 import StreamBlock from './StreamBlock'
 
 interface Props {
   agentId: string
-  initialSession: { session_id: string; messages: SessionMessage[] } | null
+  initialSession: {
+    session_id: string
+    turns?: Turn[]
+    messages?: SessionMessage[]
+  } | null
   onMemoryHits: (hits: MemoryHit[]) => void
   onSessionId: (sid: string) => void
 }
 
 export default function ChatPanel({ agentId, initialSession, onMemoryHits, onSessionId }: Props) {
-  const { events, turns, streaming, sessionId, send, stop } = useStreamChat()
-  const [messages, setMessages] = useState<SessionMessage[]>(initialSession?.messages ?? [])
+  const { events, turns, currentUser, streaming, sessionId, send, stop } = useStreamChat(
+    initialSession?.turns ?? [],
+  )
+  const [messages] = useState<SessionMessage[]>(initialSession?.messages ?? [])
   const inputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const stickyRef = useRef(true)
@@ -43,7 +49,6 @@ export default function ChatPanel({ agentId, initialSession, onMemoryHits, onSes
     const text = inputRef.current?.value.trim()
     if (!text || streaming) return
     if (inputRef.current) inputRef.current.value = ''
-    setMessages((prev) => [...prev, { role: 'user', content: text }])
     stickyRef.current = true
     await send(agentId, text, initialSession?.session_id ?? sessionId ?? undefined)
   }
@@ -55,6 +60,7 @@ export default function ChatPanel({ agentId, initialSession, onMemoryHits, onSes
           <div className="empty-hint">选择一个 Agent 并输入任务开始对话</div>
         )}
 
+        {/* 旧数据回退：纯文本历史消息 */}
         {messages.map((m, i) => (
           <div className={`msg-bubble ${m.role}`} key={`m${i}`}>
             <div className="agent-title">{m.role === 'user' ? '💬 用户' : '🤖 ' + agentId}</div>
@@ -62,19 +68,33 @@ export default function ChatPanel({ agentId, initialSession, onMemoryHits, onSes
           </div>
         ))}
 
-        {turns.map((turnEvents, i) => (
-          <div className="msg-bubble" key={`t${i}`}>
-            <div className="agent-title">🤖 {agentId}</div>
-            <StreamBlock events={turnEvents} agentName={agentId} />
+        {/* 已完成轮次：用户消息 + 完整过程交替显示 */}
+        {turns.map((turn, i) => (
+          <div key={`turn-${i}`}>
+            <div className="msg-bubble user">
+              <div className="agent-title">💬 用户</div>
+              <div className="bubble">{turn.user}</div>
+            </div>
+            <div className="msg-bubble">
+              <div className="agent-title">🤖 {agentId}</div>
+              <StreamBlock events={turn.events} agentName={agentId} />
+            </div>
           </div>
         ))}
 
+        {/* 当前轮：用户消息 + 流式过程 */}
         {events.length > 0 && (
-          <div className="msg-bubble">
-            <div className="agent-title">
-              🤖 {agentId} {streaming ? '执行中...' : '（完成）'}
+          <div>
+            <div className="msg-bubble user">
+              <div className="agent-title">💬 用户</div>
+              <div className="bubble">{currentUser}</div>
             </div>
-            <StreamBlock events={events} agentName={agentId} />
+            <div className="msg-bubble">
+              <div className="agent-title">
+                🤖 {agentId} {streaming ? '执行中...' : '（完成）'}
+              </div>
+              <StreamBlock events={events} agentName={agentId} />
+            </div>
           </div>
         )}
 

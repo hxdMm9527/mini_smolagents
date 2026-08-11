@@ -319,7 +319,18 @@ class Agent:
     def _save_checkpoint(self, messages=None):
         if self.checkpoint and self.session_id:
             try:
-                self.checkpoint.save(self.session_id, messages if messages is not None else self._last_messages)
+                turn = getattr(self, "_current_turn", None)
+                existing = self.checkpoint.load_full(self.session_id) or {}
+                turns = list(existing.get("turns", []))
+                if turn and turn.get("events"):
+                    # 同一轮重复调用时不重复追加（对象同一性判断，进程内可靠）
+                    if not turns or turns[-1] is not turn:
+                        turns.append(turn)
+                self.checkpoint.save(
+                    self.session_id,
+                    messages if messages is not None else self._last_messages,
+                    turns=turns,
+                )
             except Exception:
                 pass
 
@@ -386,6 +397,14 @@ class Agent:
         return SimpleNamespace(content=text or None, tool_calls=tcs)
 
     def run_stream(self, task: str, delegation_id: str | None = None):
+        """核心执行逻辑的 generator。只 yield 事件，不打印，并收集本轮事件到 _current_turn。"""
+        turn = {"user": task, "events": []}
+        self._current_turn = turn
+        for ev in self._run_stream_inner(task, delegation_id):
+            turn["events"].append(ev)
+            yield ev
+
+    def _run_stream_inner(self, task: str, delegation_id: str | None = None):
         """核心执行逻辑的 generator。只 yield 事件，不打印。
 
         事件类型：

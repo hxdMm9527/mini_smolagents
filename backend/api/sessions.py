@@ -14,15 +14,20 @@ async def list_sessions():
 
 @router.get("/{session_id}")
 async def get_session(session_id: str):
-    messages = CHECKPOINT.load(session_id)
-    if messages is None:
+    data = CHECKPOINT.load_full(session_id)
+    if data is None:
         raise HTTPException(status_code=404, detail="会话不存在")
+    turns = data.get("turns", [])
+    if turns:
+        return {"session_id": session_id, "turns": turns}
+    # 旧数据无 turns：回退为纯文本消息
+    messages = data.get("messages", [])
     clean = [
         {"role": m["role"], "content": m.get("content", "")}
         for m in messages
         if m.get("role") in ("user", "assistant") and m.get("content")
     ]
-    return {"session_id": session_id, "messages": clean}
+    return {"session_id": session_id, "turns": [], "messages": clean}
 
 
 @router.delete("/{session_id}")

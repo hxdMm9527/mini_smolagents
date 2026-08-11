@@ -65,22 +65,28 @@ class Checkpoint:
     def _path(self, session_id: str) -> Path:
         return self.base_dir / f"{session_id}.json"
 
-    def save(self, session_id: str, messages: list[dict]):
+    def save(self, session_id: str, messages: list[dict], turns: list[dict] | None = None):
         data = {
             "session_id": session_id,
             "messages": messages,
+            "turns": turns or [],
             "saved_at": datetime.now().isoformat(),
         }
         with open(self._path(session_id), "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     def load(self, session_id: str) -> list[dict] | None:
+        data = self.load_full(session_id)
+        return data["messages"] if data else None
+
+    def load_full(self, session_id: str) -> dict | None:
         path = self._path(session_id)
         if not path.exists():
             return None
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data["messages"]
+        data.setdefault("turns", [])
+        return data
 
     def list_sessions(self) -> list[str]:
         return [p.stem for p in self.base_dir.glob("*.json")]
