@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import './app.css'
 import type { AgentInfo, MemoryHit } from './types'
 import Header from './components/Header'
 import ChatPanel from './components/ChatPanel'
