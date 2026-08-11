@@ -1,8 +1,9 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { StreamEvent } from './types'
 
 export interface UseStreamChat {
   events: StreamEvent[]
+  turns: StreamEvent[][]
   streaming: boolean
   sessionId: string | null
   send: (agentId: string, message: string, sessionId?: string) => Promise<void>
@@ -12,9 +13,15 @@ export interface UseStreamChat {
 
 export function useStreamChat(): UseStreamChat {
   const [events, setEvents] = useState<StreamEvent[]>([])
+  const [turns, setTurns] = useState<StreamEvent[][]>([])
   const [streaming, setStreaming] = useState(false)
   const [sessionId, setSessionId] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const eventsRef = useRef<StreamEvent[]>([])
+
+  useEffect(() => {
+    eventsRef.current = events
+  }, [events])
 
   const send = useCallback(
     async (agentId: string, message: string, sessionIdArg?: string) => {
@@ -22,6 +29,11 @@ export function useStreamChat(): UseStreamChat {
       const controller = new AbortController()
       abortRef.current = controller
 
+      // 归档上一轮已完成的事件到历史轮次，再清空开始新一轮
+      const prev = eventsRef.current
+      if (prev.length) {
+        setTurns((t) => [...t, prev])
+      }
       setEvents([])
       setStreaming(true)
       if (sessionIdArg) setSessionId(sessionIdArg)
@@ -86,9 +98,10 @@ export function useStreamChat(): UseStreamChat {
   const reset = useCallback(() => {
     abortRef.current?.abort()
     setEvents([])
+    setTurns([])
     setSessionId(null)
     setStreaming(false)
   }, [])
 
-  return { events, streaming, sessionId, send, stop, reset }
+  return { events, turns, streaming, sessionId, send, stop, reset }
 }

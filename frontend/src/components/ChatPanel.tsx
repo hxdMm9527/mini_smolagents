@@ -11,10 +11,11 @@ interface Props {
 }
 
 export default function ChatPanel({ agentId, initialSession, onMemoryHits, onSessionId }: Props) {
-  const { events, streaming, sessionId, send, stop } = useStreamChat()
+  const { events, turns, streaming, sessionId, send, stop } = useStreamChat()
   const [messages, setMessages] = useState<SessionMessage[]>(initialSession?.messages ?? [])
   const inputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const stickyRef = useRef(true)
 
   useEffect(() => {
     const hit = events.find((e) => e.type === 'memory')
@@ -24,8 +25,17 @@ export default function ChatPanel({ agentId, initialSession, onMemoryHits, onSes
   }, [events, onMemoryHits, onSessionId])
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
-  }, [events, messages])
+    const el = scrollRef.current
+    if (el && stickyRef.current) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    }
+  }, [events, turns, messages])
+
+  const onScroll = () => {
+    const el = scrollRef.current
+    if (!el) return
+    stickyRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100
+  }
 
   const doneEvent = [...events].reverse().find((e) => e.type === 'done')
 
@@ -34,13 +44,14 @@ export default function ChatPanel({ agentId, initialSession, onMemoryHits, onSes
     if (!text || streaming) return
     if (inputRef.current) inputRef.current.value = ''
     setMessages((prev) => [...prev, { role: 'user', content: text }])
+    stickyRef.current = true
     await send(agentId, text, initialSession?.session_id ?? sessionId ?? undefined)
   }
 
   return (
     <div className="chat-panel">
-      <div className="scroll-area" ref={scrollRef}>
-        {messages.length === 0 && events.length === 0 && (
+      <div className="scroll-area" ref={scrollRef} onScroll={onScroll}>
+        {messages.length === 0 && turns.length === 0 && events.length === 0 && (
           <div className="empty-hint">选择一个 Agent 并输入任务开始对话</div>
         )}
 
@@ -48,6 +59,13 @@ export default function ChatPanel({ agentId, initialSession, onMemoryHits, onSes
           <div className={`msg-bubble ${m.role}`} key={`m${i}`}>
             <div className="agent-title">{m.role === 'user' ? '💬 用户' : '🤖 ' + agentId}</div>
             <div className="bubble">{m.content}</div>
+          </div>
+        ))}
+
+        {turns.map((turnEvents, i) => (
+          <div className="msg-bubble" key={`t${i}`}>
+            <div className="agent-title">🤖 {agentId}</div>
+            <StreamBlock events={turnEvents} agentName={agentId} />
           </div>
         ))}
 

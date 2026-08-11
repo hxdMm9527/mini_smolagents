@@ -244,6 +244,45 @@ body {
   overflow-x: auto;
 }
 
+/* ===== 工具卡片（action + result 合并，可折叠） ===== */
+.tool-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--bg);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+}
+
+.tool-head .tool-preview {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.tool-body .result {
+  margin-top: 4px;
+}
+
 .result {
   background: var(--bg);
   border-left: 3px solid var(--green);
