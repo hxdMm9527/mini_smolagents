@@ -6,7 +6,7 @@ import MemoryPanel from './components/MemoryPanel'
 
 export default function App() {
   const [agents, setAgents] = useState<AgentInfo[]>([])
-  const [selected, setSelected] = useState('')
+  const [selected, setSelected] = useState('助手')
   const [memoryHits, setMemoryHits] = useState<MemoryHit[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') ?? 'light')

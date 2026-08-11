@@ -10,6 +10,8 @@ REGISTRY = AgentRegistry()
 MEMORY = EpisodicMemory(collection_name="agent_memory", persist_dir="./chroma_db")
 CHECKPOINT = Checkpoint(base_dir=".memory")
 
+MAIN_AGENT_NAME = "助手"
+
 DEV_PROMPT = """\
 你是资深 Python 开发者。你的开发流程：
 1. 理解需求，分析需要什么函数和类
