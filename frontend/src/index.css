@@ -219,9 +219,30 @@ body {
 .thought {
   background: var(--bg);
   border-left: 3px solid var(--accent);
-  border-radius: 8px;
+  border-radius: 0 8px 8px 8px;
   padding: 8px 12px;
   font-size: 14px;
+}
+
+.thought-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.thought-head:hover {
+  border-color: var(--accent);
+}
+
+.thought-head + .thought {
+  margin-top: 2px;
 }
 
 .action-card {

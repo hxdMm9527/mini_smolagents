@@ -47,10 +47,36 @@ function ToolCard({ tool, args, result, collapsed, onToggle }: ToolCardProps) {
   )
 }
 
+interface ThoughtCardProps {
+  content: string
+  collapsed: boolean
+  onToggle: () => void
+}
+
+function ThoughtCard({ content, collapsed, onToggle }: ThoughtCardProps) {
+  if (collapsed) {
+    return (
+      <div className="thought-head" onClick={onToggle}>
+        <span>▶</span>
+        <span>💬 思考</span>
+      </div>
+    )
+  }
+  return (
+    <div>
+      <div className="thought-head" onClick={onToggle}>
+        <span>▼</span>
+        <span>💬 思考</span>
+      </div>
+      <div className="thought">
+        <Md text={content} />
+      </div>
+    </div>
+  )
+}
+
 function MainBlock({ ev }: { ev: StreamEvent }) {
   switch (ev.type) {
-    case 'thought':
-      return <div className="thought">💬 <Md text={ev.content} /></div>
     case 'note':
       return <div className="note">{ev.content}</div>
     case 'done':
@@ -70,7 +96,10 @@ function MainBlock({ ev }: { ev: StreamEvent }) {
 }
 
 function ItemList({ items }: { items: DisplayItem[] }) {
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // ponytail: thought 默认折叠，避免长思考撑长答案
+  const [collapsed, setCollapsed] = useState<Set<string>>(
+    () => new Set(items.map((item, i) => (item.kind === 'main' && item.ev.type === 'thought' ? `thought-${i}` : null)).filter(Boolean) as string[]),
+  )
 
   const toggle = (key: string) => {
     setCollapsed((prev) => {
@@ -96,6 +125,18 @@ function ItemList({ items }: { items: DisplayItem[] }) {
       continue
     }
     const ev = item.ev
+    if (ev.type === 'thought') {
+      const key = `thought-${i}`
+      nodes.push(
+        <ThoughtCard
+          key={key}
+          content={ev.content}
+          collapsed={collapsed.has(key)}
+          onToggle={() => toggle(key)}
+        />,
+      )
+      continue
+    }
     // action + 紧随其后的 result 合并成一个可折叠工具卡片
     if (ev.type === 'action') {
       let result: string | undefined
