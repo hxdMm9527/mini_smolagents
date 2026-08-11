@@ -6,7 +6,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.api import agents, chat, memory
+from backend.api import agents, chat, memory, sessions
 
 app = FastAPI(title="mini_smolagents", version="0.1.0")
 
@@ -20,6 +20,7 @@ app.add_middleware(
 app.include_router(chat.router, prefix="/api/chat")
 app.include_router(agents.router, prefix="/api/agents")
 app.include_router(memory.router, prefix="/api/memory")
+app.include_router(sessions.router, prefix="/api/sessions")
 
 
 @app.get("/api/health")

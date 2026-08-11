@@ -1,14 +1,33 @@
-import { useState } from 'react'
-import type { MemoryHit } from '../types'
+import { useEffect, useState } from 'react'
+import type { MemoryHit, SessionInfo } from '../types'
 
 interface Props {
   hits: MemoryHit[]
+  onResume: (sessionId: string) => void
 }
 
-export default function MemoryPanel({ hits }: Props) {
+const PAGE = 5
+
+export default function MemoryPanel({ hits, onResume }: Props) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<MemoryHit[] | null>(null)
   const [searching, setSearching] = useState(false)
+  const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [showAll, setShowAll] = useState(false)
+
+  const loadSessions = () => {
+    fetch('/api/sessions')
+      .then((r) => r.json())
+      .then((data) => setSessions(data.sessions ?? []))
+      .catch(() => {})
+  }
+
+  useEffect(loadSessions, [])
+
+  const removeSession = async (sessionId: string) => {
+    await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' })
+    setSessions((prev) => prev.filter((s) => s.session_id !== sessionId))
+  }
 
   const search = async () => {
     if (!query.trim()) return
@@ -25,6 +44,8 @@ export default function MemoryPanel({ hits }: Props) {
       setSearching(false)
     }
   }
+
+  const visible = showAll ? sessions : sessions.slice(0, PAGE)
 
   return (
     <aside className="memory-panel">
@@ -58,6 +79,29 @@ export default function MemoryPanel({ hits }: Props) {
             </div>
           ))}
         </>
+      )}
+
+      <h2 style={{ marginTop: 14 }}>🗂 历史会话</h2>
+      {sessions.length === 0 && <div className="memory-item">暂无历史会话</div>}
+      {visible.map((s) => (
+        <div className="session-item" key={s.session_id}>
+          <button className="session-main" onClick={() => onResume(s.session_id)}>
+            <div className="task">{s.title}</div>
+            <div className="session-time">{s.saved_at.slice(0, 19).replace('T', ' ')}</div>
+          </button>
+          <button
+            className="session-del"
+            title="删除"
+            onClick={() => removeSession(s.session_id)}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      {sessions.length > PAGE && (
+        <button className="more-btn" onClick={() => setShowAll((v) => !v)}>
+          {showAll ? '收起' : '更多'}
+        </button>
       )}
     </aside>
   )

@@ -1,17 +1,18 @@
 import { useRef, useEffect, useState } from 'react'
 import { useStreamChat } from '../useStreamChat'
-import type { MemoryHit } from '../types'
+import type { MemoryHit, SessionMessage } from '../types'
 import StreamBlock from './StreamBlock'
 
 interface Props {
   agentId: string
+  initialSession: { session_id: string; messages: SessionMessage[] } | null
   onMemoryHits: (hits: MemoryHit[]) => void
   onSessionId: (sid: string) => void
 }
 
-export default function ChatPanel({ agentId, onMemoryHits, onSessionId }: Props) {
+export default function ChatPanel({ agentId, initialSession, onMemoryHits, onSessionId }: Props) {
   const { events, streaming, sessionId, send } = useStreamChat()
-  const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; content: string }[]>([])
+  const [messages, setMessages] = useState<SessionMessage[]>(initialSession?.messages ?? [])
   const inputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -33,7 +34,7 @@ export default function ChatPanel({ agentId, onMemoryHits, onSessionId }: Props)
     if (!text || streaming) return
     if (inputRef.current) inputRef.current.value = ''
     setMessages((prev) => [...prev, { role: 'user', content: text }])
-    await send(agentId, text, sessionId ?? undefined)
+    await send(agentId, text, initialSession?.session_id ?? sessionId ?? undefined)
   }
 
   return (

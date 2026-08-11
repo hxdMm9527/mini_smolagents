@@ -85,6 +85,28 @@ class Checkpoint:
     def list_sessions(self) -> list[str]:
         return [p.stem for p in self.base_dir.glob("*.json")]
 
+    def list(self) -> list[dict]:
+        """返回会话摘要列表（按保存时间倒序）：[{session_id, saved_at, title}]"""
+        items = []
+        for p in self.base_dir.glob("*.json"):
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                continue
+            title = ""
+            for m in data.get("messages", []):
+                if m.get("role") == "user" and m.get("content"):
+                    title = m["content"][:50]
+                    break
+            items.append({
+                "session_id": data.get("session_id", p.stem),
+                "saved_at": data.get("saved_at", ""),
+                "title": title,
+            })
+        items.sort(key=lambda x: x["saved_at"], reverse=True)
+        return items
+
     def delete(self, session_id: str):
         path = self._path(session_id)
         if path.exists():

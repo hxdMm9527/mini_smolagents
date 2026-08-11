@@ -314,10 +314,10 @@ class Agent:
             registry.register(agent)
         return agent, task, None
 
-    def _save_checkpoint(self):
+    def _save_checkpoint(self, messages=None):
         if self.checkpoint and self.session_id:
             try:
-                self.checkpoint.save(self.session_id, self._last_messages)
+                self.checkpoint.save(self.session_id, messages if messages is not None else self._last_messages)
             except Exception:
                 pass
 
@@ -402,10 +402,20 @@ class Agent:
         history = self._retrieve_memory(task)
         if history:
             yield self._event("memory", hits=history)
-        messages = [
-            {"role": "system", "content": self._inject_memory(task)},
-            {"role": "user", "content": task},
-        ]
+
+        saved = None
+        if self.checkpoint and self.session_id:
+            saved = self.checkpoint.load(self.session_id)
+        if saved:
+            messages = list(saved)
+            if messages and messages[0].get("role") != "system":
+                messages.insert(0, {"role": "system", "content": self._inject_memory(task)})
+            messages = messages + [{"role": "user", "content": task}]
+        else:
+            messages = [
+                {"role": "system", "content": self._inject_memory(task)},
+                {"role": "user", "content": task},
+            ]
         self._last_messages = messages
 
         idle_steps = 0
@@ -426,7 +436,7 @@ class Agent:
                     final = text or self._summarize_messages(messages)
                     yield self._event("note", content=note)
                     yield self._event("done", content=final, stored=False, session_id=self.session_id)
-                    self._save_checkpoint()
+                    self._save_checkpoint(messages)
                     return
                 continue
             idle_steps = 0
@@ -495,13 +505,13 @@ class Agent:
                         self.memory.add(task, final)
                         stored = True
                     yield self._event("done", content=final, stored=stored, session_id=self.session_id)
-                    self._save_checkpoint()
+                    self._save_checkpoint(messages)
                     return
 
         summary = self._summarize_messages(self._last_messages)
         yield self._event("note", content=f"[{self.name}] 达到最大步数，正在总结已有结果...")
         yield self._event("done", content=summary, stored=False, session_id=self.session_id)
-        self._save_checkpoint()
+        self._save_checkpoint(messages)
 
     def run(self, task: str) -> str:
         result = ""

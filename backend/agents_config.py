@@ -4,10 +4,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from mini_smolagents import Agent, AgentRegistry, EpisodicMemory, OpenAIModel, python_interpreter, web_search
+from mini_smolagents import Agent, AgentRegistry, Checkpoint, EpisodicMemory, OpenAIModel, python_interpreter, web_search
 
 REGISTRY = AgentRegistry()
 MEMORY = EpisodicMemory(collection_name="agent_memory", persist_dir="./chroma_db")
+CHECKPOINT = Checkpoint(base_dir=".memory")
 
 DEV_PROMPT = """\
 你是资深 Python 开发者。你的开发流程：
@@ -64,6 +65,7 @@ def build_agents() -> dict[str, Agent]:
         description="Python 开发者，写代码和调试。用 python_interpreter 逐步实现功能和测试。",
         system_prompt=DEV_PROMPT,
         registry=REGISTRY,
+        checkpoint=CHECKPOINT,
     )
 
     reviewer = Agent(
@@ -73,6 +75,7 @@ def build_agents() -> dict[str, Agent]:
         description="代码审核员，审查代码的逻辑错误、安全问题、代码风格，不重写代码。",
         system_prompt=REVIEWER_PROMPT,
         registry=REGISTRY,
+        checkpoint=CHECKPOINT,
     )
 
     pm = Agent(
@@ -84,6 +87,7 @@ def build_agents() -> dict[str, Agent]:
         managed_agents=[developer, reviewer],
         registry=REGISTRY,
         memory=MEMORY,
+        checkpoint=CHECKPOINT,
     )
 
     main = Agent(
@@ -94,6 +98,7 @@ def build_agents() -> dict[str, Agent]:
         system_prompt=MAIN_PROMPT,
         registry=REGISTRY,
         memory=MEMORY,
+        checkpoint=CHECKPOINT,
     )
 
     REGISTRY.register(main, capabilities=["general_assistant", "web_search", "code", "task_decomposition"])

@@ -11,6 +11,17 @@ export interface MemoryHit {
   score: number
 }
 
+export interface SessionInfo {
+  session_id: string
+  saved_at: string
+  title: string
+}
+
+export interface SessionMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export interface BaseEvent {
   type: string
   agent?: string
