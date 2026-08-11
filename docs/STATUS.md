@@ -1,11 +1,11 @@
 # Phase 3 阶段性文档（上下文恢复点）
 
-> 保存时间：2026-08-10。用途：压缩上下文后恢复工作现场。
+> 保存时间：2026-08-11。用途：压缩上下文后恢复工作现场。
 
 ## 1. 项目状态总览
 
 项目：`mini_smolagents`（`D:\Projects\Discussion_Idea\mini_smolagents`）
-GitHub：`https://github.com/hxdMm9527/mini_smolagents`（中国网络 443 连不上，push 暂缓，本地 commit 已保存）
+GitHub：`https://github.com/hxdMm9527/mini_smolagents`。已配置 **SSH over 443**（`~/.ssh/config`：`HostName ssh.github.com` + `Port 443`），push 正常。
 
 **Phase 3 目标**：Web UI + RAG 记忆 + A2A 协议 + Docker 部署。
 
@@ -15,12 +15,14 @@ GitHub：`https://github.com/hxdMm9527/mini_smolagents`（中国网络 443 连�
 | 2 | `agent.py`（run_stream + memory 集成） | ✅ 完成 |
 | 3 | `a2a.py`（AgentCard/Task/Artifact/AgentRegistry） | ✅ 完成 |
 | 4 | `agent.py` 路由改走 AgentRegistry + 动态发现 | ✅ 完成 |
-| 5 | `backend/`（FastAPI + SSE + agents_config） | ✅ 完成（Docker 部署已验证） |
-| 6 | `frontend/`（React + Vite） | ⬜ 下一步 |
-| 7 | Docker 编排 | ✅ 完成（backend 单容器） |
+| 5 | `backend/`（FastAPI + SSE + agents_config） | ✅ 完成（commit `7e1d119`） |
+| 6 | `frontend/`（React + Vite） | ✅ 完成（commit `6836c36`） |
+| 7 | Docker 编排 | ✅ 完成（backend 单容器；frontend 尚未容器化） |
 
-最近 commit：`2e30ec1`（Phase 3 steps 1-4）
-Step 5 后新增：backend/ 目录 + docker-compose.yml + backend/Dockerfile + backend/requirements.txt（待 commit）
+最近 commit（均已 push 到 GitHub）：
+- `2e30ec1` Phase 3 steps 1-4 — memory / run_stream / A2A / 动态发现
+- `7e1d119` Phase 3 step 5 — FastAPI backend + Docker 部署
+- `6836c36` Phase 3 step 6 — React frontend + 助手主 Agent + token 流式
 
 ## 2.5 接口设计定稿（Step 5 讨论结果）
 
@@ -57,24 +59,31 @@ docker-compose.yml     # 单服务 backend，env_file=.env + chroma_db 卷 + 模
 ```
 
 **Docker 部署**：`docker compose up -d` → http://127.0.0.1:8000
-- 验证：health ok、3 角色（PM/developer/reviewer）、SSE 中文正常、memory 事件命中历史（chroma_db 卷持久化生效）
+- 验证：health ok、4 角色（助手/PM/developer/reviewer）、SSE 中文正常、memory 事件命中历史（chroma_db 卷持久化生效）
 - 模型缓存卷：宿主 `~/.cache/chroma` → 容器 `/root/.cache/chroma`，避免容器内重下 79MB
+- 源码卷挂载 + `uvicorn --reload`：改 Python 代码自动重载，无需 `--build`
+
+**Step 6 补充实现**（相对本协议的新增）：
+- **token 级打字机**：thought 内容经 `_generate_stream` 逐 token 下发 `{"type":"token","content":...}`，前端按 token 流式渲染
+- **空转兜底**：连续 2 步无 tool_calls 直接结束（idle guard），避免模型自说自话空转
+- **中文工具名过滤**：`_build_tools_schema` 用 `re.fullmatch(r"[a-zA-Z0-9_-]+")` 过滤，修复 DeepSeek 对中文工具名报 400 的 bug
+- **主 Agent「助手」**：中文名，通用型 MAIN_PROMPT，自己决定如何用 registry 里的子 Agent 完成任务；`/api/agents` 默认选中它
+- 4 角色：**助手**（主）+ PM + developer + reviewer（agents_config.py 共享 REGISTRY + MEMORY）
 
 **遗留小问题**：PM 初始无 description（已修，加在 agents_config.py 的 Agent 构造参数里）
-
-最近本地 commit：`2e30ec1`（feat: Phase 3 steps 1-4）
-最近工作：动态发现完成，已提交。测试全通过（test_memory / test_stream / test_a2a）。
 
 ## 2. 环境
 
 - Windows，Python 3.12.7，Node v24.15.0，npm 11.12.1
-- Docker Desktop 29.4.3 + WSL2 Ubuntu-24.04（可用，用于 Step 7）
+- Docker Desktop 29.4.3 + WSL2 Ubuntu-24.04（可用，Step 7 已验证）
 - LLM：DeepSeek，`OPENAI_BASE_URL=https://api.deepseek.com/v1`，key 在 `.env`（`DEEPSEEK_API_KEY`）
-- 依赖已装：openai, ddgs, python-dotenv, rich, chromadb（1.5.9）
-- 待装（Step 5）：fastapi, uvicorn, sse-starlette
+- 依赖已装：openai, ddgs, python-dotenv, rich, chromadb（1.5.9）, fastapi（0.141.1）, uvicorn（0.48.0）
+- **注意**：SSE 用徒手 `StreamingResponse`，**不装** sse-starlette
 - **注意**：ChromaDB 首次用会下载 79MB 的 all-MiniLM-L6-v2 模型（已下载缓存，不慢）
 - **注意**：PowerShell 写文件会破坏 UTF-8 中文，用 write/edit 工具而非 PowerShell 重写
 - **注意**：Windows 上 ChromaDB 锁文件，临时目录清理需 `ignore_cleanup_errors=True`
+- **前端**：Vite + React 19 + TS；`vite.config.ts` 设 `host: '127.0.0.1'`（修 IPv6 ::1 歧义）+ proxy `/api`→8000；`dev.ps1` 一键启动（uvicorn + vite）
+- **热重载**：backend 走 `uvicorn --reload`，frontend 走 vite HMR，均自动生效
 
 ## 3. 已实现的核心接口（代码层）
 
@@ -139,16 +148,28 @@ docker-compose.yml     # 单服务 backend，env_file=.env + chroma_db 卷 + 模
 mini_smolagents/
 ├── mini_smolagents/
 │   ├── __init__.py      # 导出全部公共类
-│   ├── agent.py         # Agent/CodeAgent + run_stream + registry 路由
+│   ├── agent.py         # Agent/CodeAgent + run_stream + token 流 + registry 路由
 │   ├── a2a.py           # AgentCard/Task/Artifact/AgentRegistry
 │   ├── memory.py        # EpisodicMemory/Checkpoint/should_store
 │   ├── llm.py           # OpenAIModel
 │   ├── default_tools.py # web_search/python_interpreter/final_answer
 │   ├── tools.py         # @tool 装饰器
 │   └── types.py         # Tool dataclass
+├── backend/             # Step 5 FastAPI
+│   ├── main.py          # FastAPI + CORS 全开 + 路由挂载
+│   ├── agents_config.py # 共享 REGISTRY + MEMORY + 4 角色（助手/PM/developer/reviewer）
+│   ├── api/{chat,agents,memory}.py   # chat.py 为同步 generator
+│   ├── requirements.txt # openai/ddgs/dotenv/rich/chromadb/fastapi/uvicorn
+│   └── Dockerfile       # python:3.12-slim
+├── frontend/            # Step 6 React + Vite
+│   ├── src/App.tsx + main.tsx + useStreamChat.ts + groupEvents.ts + types.ts
+│   ├── src/components/{Header,ChatPanel,StreamBlock,SubAgentWindow,MemoryPanel}.tsx
+│   └── vite.config.ts   # host 127.0.0.1 + proxy /api→8000
+├── docker-compose.yml   # 单服务 backend，env_file=.env + chroma_db 卷 + 模型缓存卷 + --reload
+├── dev.ps1              # 一键启动 backend + frontend
 ├── tests/
 │   ├── test_memory.py   # 6+1 用例
-│   ├── test_stream.py   # 5 用例
+│   ├── test_stream.py   # 5 用例（含 idle guard）
 │   └── test_a2a.py      # 12 用例
 ├── examples/
 │   ├── code_team.py     # PM+dev+reviewer demo（走新 registry 路由）
@@ -157,10 +178,11 @@ mini_smolagents/
 └── pyproject.toml       # 依赖含 chromadb
 ```
 
-## 6. 恢复动作清单
+## 6. 当前状态与遗留项
 
-1. 读 `docs/PRD.md` + 本文档 §2.5 了解接口定稿
-2. 当前 backend 已在 Docker 运行（`docker compose up -d` 可重启）
-3. 下一步：Step 6 frontend（React + Vite，见 PRD §4.5）——按 §2.5 的 SSE 协议消费，子 Agent 事件按 delegation_id 分小窗渲染
-4. 前端完成后：加 frontend 容器到 docker-compose（nginx 反代 backend）
-5. 网络恢复后 `git push origin main`（当前未 push 的：Step 5 + Docker 文件）
+Phase 3 全部 7 步已完成并 push（SSH over 443，远程 = 本地 `6836c36`，working tree clean）。
+
+**遗留项**（非阻塞）：
+1. `tests/__pycache__/test_agent.cpython-312-pytest-9.1.1.pyc` 被误跟踪在 git 索引，应从索引移除并加进 `.gitignore`
+2. frontend 尚未进 docker-compose（Step 7 只容器化 backend）；如要容器化需 nginx 反代 backend
+3. 后续：Phase 4 开发前可更新本文件
