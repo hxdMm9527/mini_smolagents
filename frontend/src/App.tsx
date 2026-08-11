@@ -9,6 +9,12 @@ export default function App() {
   const [selected, setSelected] = useState('')
   const [memoryHits, setMemoryHits] = useState<MemoryHit[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') ?? 'light')
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem('theme', theme)
+  }, [theme])
 
   useEffect(() => {
     fetch('/api/agents')
@@ -22,7 +28,13 @@ export default function App() {
 
   return (
     <div className="app">
-      <Header agents={agents} selected={selected} onSelect={setSelected} />
+      <Header
+        agents={agents}
+        selected={selected}
+        onSelect={setSelected}
+        theme={theme}
+        onToggleTheme={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+      />
       <div className="main">
         <ChatPanel
           agentId={selected}

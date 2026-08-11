@@ -4,9 +4,11 @@ interface Props {
   agents: AgentInfo[]
   selected: string
   onSelect: (name: string) => void
+  theme: string
+  onToggleTheme: () => void
 }
 
-export default function Header({ agents, selected, onSelect }: Props) {
+export default function Header({ agents, selected, onSelect, theme, onToggleTheme }: Props) {
   return (
     <header className="header">
       <h1>mini_smolagents</h1>
@@ -17,6 +19,9 @@ export default function Header({ agents, selected, onSelect }: Props) {
           </option>
         ))}
       </select>
+      <button className="theme-toggle" onClick={onToggleTheme}>
+        {theme === 'dark' ? '☀️ 浅色' : '🌙 深色'}
+      </button>
     </header>
   )
 }
