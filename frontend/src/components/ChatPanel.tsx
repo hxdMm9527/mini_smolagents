@@ -11,7 +11,7 @@ interface Props {
 }
 
 export default function ChatPanel({ agentId, initialSession, onMemoryHits, onSessionId }: Props) {
-  const { events, streaming, sessionId, send } = useStreamChat()
+  const { events, streaming, sessionId, send, stop } = useStreamChat()
   const [messages, setMessages] = useState<SessionMessage[]>(initialSession?.messages ?? [])
   const inputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -74,9 +74,13 @@ export default function ChatPanel({ agentId, initialSession, onMemoryHits, onSes
           onKeyDown={(e) => e.key === 'Enter' && handleSend()}
           disabled={streaming}
         />
-        <button onClick={handleSend} disabled={streaming}>
-          {streaming ? '执行中' : '发送'}
-        </button>
+        {streaming ? (
+          <button className="stop-btn" onClick={stop}>
+            ⏹ 停止
+          </button>
+        ) : (
+          <button onClick={handleSend}>发送</button>
+        )}
       </div>
     </div>
   )

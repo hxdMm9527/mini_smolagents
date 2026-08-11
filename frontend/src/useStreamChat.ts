@@ -6,6 +6,7 @@ export interface UseStreamChat {
   streaming: boolean
   sessionId: string | null
   send: (agentId: string, message: string, sessionId?: string) => Promise<void>
+  stop: () => void
   reset: () => void
 }
 
@@ -77,6 +78,11 @@ export function useStreamChat(): UseStreamChat {
     [],
   )
 
+  const stop = useCallback(() => {
+    abortRef.current?.abort()
+    setStreaming(false)
+  }, [])
+
   const reset = useCallback(() => {
     abortRef.current?.abort()
     setEvents([])
@@ -84,5 +90,5 @@ export function useStreamChat(): UseStreamChat {
     setStreaming(false)
   }, [])
 
-  return { events, streaming, sessionId, send, reset }
+  return { events, streaming, sessionId, send, stop, reset }
 }

@@ -185,6 +185,14 @@ body {
   cursor: not-allowed;
 }
 
+.input-area .stop-btn {
+  background: #ef4444;
+}
+
+.input-area .stop-btn:hover {
+  background: #dc2626;
+}
+
 /* ===== 流式块 ===== */
 .stream-block {
   display: flex;

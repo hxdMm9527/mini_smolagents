@@ -24,7 +24,9 @@ from .types import Tool
 
 SYSTEM_PROMPT = """\
 你是一个善于逐步解决问题的助手。你可以使用工具调用来完成任务。
-当你有最终答案时，调用 `final_answer` 工具。
+每一轮，先判断你是否能直接回答用户的问题：
+- 能回答：立即调用 `final_answer` 工具返回完整答案。你的最终答案只能通过 `final_answer` 输出，不要直接输出答案文本。
+- 不能回答：说明还缺什么信息，调用合适的工具获取，然后再判断。
 不要在相同的参数下重复调用同一个工具。
 如果你使用了 `create_sub_agent`，你仍然是最终答案的负责人。
 不要把用户任务原封不动转发给子助手——你必须亲自分析、拆解后再委托。
@@ -33,7 +35,7 @@ SYSTEM_PROMPT = """\
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=10, max_messages=30, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None):
+    def __init__(self, model, tools, max_steps=5, max_messages=30, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None):
         self.model = model
         self.max_steps = max_steps
         self.max_messages = max_messages
@@ -430,8 +432,8 @@ class Agent:
             if not msg.tool_calls:
                 idle_steps += 1
                 messages.append({"role": "assistant", "content": text})
-                # ponytail: 连续空转兜底，避免问候语/无任务时空转到 max_steps
-                if idle_steps >= 2:
+                # ponytail: 无工具调用 = 模型已给出直接回答，立即结束，避免重复生成
+                if idle_steps >= 1:
                     note = f"[{self.name}] 连续多步未调用工具，直接结束。"
                     final = text or self._summarize_messages(messages)
                     yield self._event("note", content=note)

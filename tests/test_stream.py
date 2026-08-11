@@ -131,7 +131,7 @@ def test_run_returns_result(tmpdir):
 
 
 def test_idle_guard_ends_early(tmpdir):
-    """连续无 tool_calls 时应在 2 步内结束，不空转到 max_steps。"""
+    """无 tool_calls 时应在 1 步内结束（模型给出的文本即最终答案），不空转到 max_steps。"""
     script = [
         {"content": "你好呀"},
         {"content": "我是助手的回答，虽然没有调用工具，但可以直接给用户"},
@@ -142,12 +142,12 @@ def test_idle_guard_ends_early(tmpdir):
     types = [e["type"] for e in events]
     assert types[0] == "step"
     assert "done" in types
-    # 空转守卫在连续 2 步无 tool_calls 后触发，步数远小于 max_steps
+    # 空转守卫在无 tool_calls 后立即触发，只跑 1 步
     step_count = sum(1 for e in events if e["type"] == "step")
-    assert step_count == 2, f"expected 2 steps, got {step_count}"
+    assert step_count == 1, f"expected 1 step, got {step_count}"
     done = events[-1]
     assert done["type"] == "done"
-    assert done["content"] == "我是助手的回答，虽然没有调用工具，但可以直接给用户"
+    assert done["content"] == "你好呀"
 
 
 if __name__ == "__main__":
