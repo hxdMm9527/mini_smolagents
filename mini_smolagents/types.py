@@ -9,3 +9,16 @@ class Tool:
     description: str
     parameters: dict[str, Any]
     func: Callable[..., Any]
+
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+
+@dataclass
+class ModelResponse:
+    content: str | None = None
+    tool_calls: list[ToolCall] | None = None

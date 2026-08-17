@@ -1,7 +1,7 @@
 import io
-import threading
 from contextlib import redirect_stderr, redirect_stdout
 
+from ._exec import run_with_timeout
 from .tools import tool
 
 ALLOWED_IMPORTS = ["math", "json", "re", "datetime", "random", "collections"]
@@ -55,11 +55,7 @@ def web_search(query: str) -> str:
         except Exception as e:
             result["error"] = f"{type(e).__name__}: {e}"
 
-    t = threading.Thread(target=_do_search, daemon=True)
-    t.start()
-    t.join(timeout=15)
-    if t.is_alive():
-        result["timed_out"] = True
+    result["timed_out"] = run_with_timeout(_do_search, 15)
 
     if result["timed_out"]:
         return "Error: web search timed out (15-second limit)."
@@ -93,11 +89,7 @@ def python_interpreter(code: str) -> str:
         except Exception as e:
             result["error"] = f"{type(e).__name__}: {e}"
 
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    t.join(timeout=10)
-    if t.is_alive():
-        result["timed_out"] = True
+    result["timed_out"] = run_with_timeout(_run, 10)
 
     if result["timed_out"]:
         return "Error: code execution timed out (10-second limit)."

@@ -2,7 +2,6 @@ import io
 import json
 import re
 import sys
-import threading
 import time
 import uuid
 from types import SimpleNamespace
@@ -18,6 +17,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.text import Text
 
+from ._exec import run_with_timeout
 from .default_tools import ALLOWED_BUILTINS, ALLOWED_IMPORTS, _safe_import, final_answer as _FINAL_ANSWER_TOOL
 from .memory import should_store
 from .types import Tool
@@ -645,11 +645,7 @@ class CodeAgent(Agent):
             except Exception as e:
                 result["error"] = f"{type(e).__name__}: {e}"
 
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-        t.join(timeout=30)
-        if t.is_alive():
-            result["timed_out"] = True
+        result["timed_out"] = run_with_timeout(_run, 30)
 
         if fa["value"] is not None:
             return ("final_answer", fa["value"])
