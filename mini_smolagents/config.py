@@ -1,10 +1,13 @@
 """集中管理默认配置常量。"""
 
-# 步数 / 消息
+# 步数
 DEFAULT_MAX_STEPS = 5
 CODE_MAX_STEPS = 8
 SUB_AGENT_MAX_STEPS = 5
-DEFAULT_MAX_MESSAGES = 30
+
+# 上下文窗口 / 预算
+DEFAULT_WINDOW_SIZE = 10
+DEFAULT_TOKEN_BUDGET = 8000
 
 # 执行 / 超时 / 重试
 WEB_SEARCH_TIMEOUT = 15

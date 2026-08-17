@@ -9,7 +9,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from ._exec import run_with_timeout
-from .config import CODE_EXEC_TIMEOUT, CODE_MAX_STEPS, DEFAULT_MAX_MESSAGES, TRUNC_MEDIUM
+from .config import CODE_EXEC_TIMEOUT, CODE_MAX_STEPS, DEFAULT_WINDOW_SIZE, TRUNC_MEDIUM
 from .agent import Agent
 from .console import _trunc
 from .default_tools import ALLOWED_BUILTINS, ALLOWED_IMPORTS, _safe_import
@@ -31,8 +31,8 @@ def _extract_code(text: str) -> str:
 
 
 class CodeAgent(Agent):
-    def __init__(self, model, tools, max_steps=CODE_MAX_STEPS, max_messages=DEFAULT_MAX_MESSAGES, additional_imports=None, name=None, description=None, managed_agents=None):
-        super().__init__(model, tools, max_steps, max_messages, name=name, description=description, managed_agents=managed_agents)
+    def __init__(self, model, tools, max_steps=CODE_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, additional_imports=None, name=None, description=None, managed_agents=None):
+        super().__init__(model, tools, max_steps, window_size, name=name, description=description, managed_agents=managed_agents)
         self.authorized_imports = list(set(ALLOWED_IMPORTS) | set(additional_imports or []))
 
     def _build_sandbox(self):

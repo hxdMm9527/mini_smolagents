@@ -137,3 +137,24 @@ if __name__ == "__main__":
         test_integration(str(base / "integ"))
         test_should_store()
         print("\n=== ALL TESTS PASSED ===")
+
+
+def test_checkpoint_summary_roundtrip(tmpdir):
+    cp = Checkpoint(base_dir=str(tmpdir))
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "u"},
+    ]
+    cp.save("session_summary", messages, summary="摘要块", summarized_upto=3)
+    full = cp.load_full("session_summary")
+    assert full["summary"] == "摘要块"
+    assert full["summarized_upto"] == 3
+
+
+def test_checkpoint_summary_defaults(tmpdir):
+    """旧数据无 summary 字段时兼容为空。"""
+    cp = Checkpoint(base_dir=str(tmpdir))
+    cp.save("session_old", [{"role": "user", "content": "x"}])
+    full = cp.load_full("session_old")
+    assert full["summary"] == ""
+    assert full["summarized_upto"] == 0

@@ -141,15 +141,15 @@ def test_agent_max_steps():
     assert result == "总结：任务未完成"
 
 
-def test_trim_messages():
-    """验证消息截断：保留 system + 首条 user + 最近 N-2 条"""
+def test_sliding_window():
+    """验证滑动窗口：system + 最近 (window_size - 1) 条原文"""
 
     @tool
     def dummy() -> str:
         return "ok"
 
     model = MagicMock(spec=OpenAIModel)
-    agent = Agent(model=model, tools=[dummy], max_messages=5)
+    agent = Agent(model=model, tools=[dummy], window_size=5)
 
     msgs = [
         {"role": "system", "content": "system"},
@@ -166,21 +166,21 @@ def test_trim_messages():
 
     assert len(trimmed) == 5
     assert trimmed[0]["content"] == "system"
-    assert trimmed[1]["content"] == "task"
+    assert trimmed[1]["content"] == "a2"
     assert trimmed[2]["content"] == "t2"
     assert trimmed[3]["content"] == "a3"
     assert trimmed[4]["content"] == "t3"
 
 
-def test_trim_messages_not_needed():
-    """消息数没超 max_messages，不截断"""
+def test_sliding_window_not_needed():
+    """消息数没超 window_size，不截断"""
 
     @tool
     def dummy() -> str:
         return "ok"
 
     model = MagicMock(spec=OpenAIModel)
-    agent = Agent(model=model, tools=[dummy], max_messages=10)
+    agent = Agent(model=model, tools=[dummy], window_size=10)
 
     msgs = [
         {"role": "system", "content": "s"},
@@ -339,3 +339,68 @@ def test_create_sub_agent_dynamic_delegation():
     result = manager.run("复杂任务")
     assert "完成" in result
     assert len(model.calls) == 3
+
+def test_rolling_summary_on_overflow():
+    """窗口溢出时，滑出消息被增量摘要，窗口内保持原文。"""
+
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = Agent(model=model, tools=[dummy], window_size=4)
+    agent._summarize_messages = MagicMock(return_value="摘要块")
+
+    msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u0"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "tool", "content": "t1"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "tool", "content": "t2"},
+        {"role": "assistant", "content": "a3"},
+        {"role": "tool", "content": "t3"},
+    ]
+
+    ctx = agent._build_context(msgs)
+
+    agent._summarize_messages.assert_called_once()
+    assert agent.summary_block == "摘要块"
+
+    assert ctx[0]["role"] == "system"
+    assert ctx[1]["role"] == "system" and "摘要块" in ctx[1]["content"]
+    assert [m["content"] for m in ctx[2:]] == ["t2", "a3", "t3"]
+
+    # 无新溢出时不重复摘要
+    agent._build_context(msgs)
+    agent._summarize_messages.assert_called_once()
+
+
+def test_rolling_summary_incremental():
+    """新增溢出只摘要新增部分，摘要块追加而非重写。"""
+
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = Agent(model=model, tools=[dummy], window_size=4)
+    agent._summarize_messages = MagicMock(side_effect=["摘要A", "摘要B"])
+
+    msgs = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "u0"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "tool", "content": "t1"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    agent._build_context(msgs)
+    assert agent.summary_block == "摘要A"
+
+    msgs2 = msgs + [
+        {"role": "tool", "content": "t2"},
+        {"role": "assistant", "content": "a3"},
+    ]
+    agent._build_context(msgs2)
+    assert agent._summarize_messages.call_count == 2
+    assert agent.summary_block == "摘要A\n\n摘要B"

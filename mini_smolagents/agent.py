@@ -11,8 +11,9 @@ if sys.stdout.encoding.lower() != "utf-8":
 from rich.console import Console
 
 from .a2a import AgentRegistry
-from .config import DEFAULT_MAX_MESSAGES, DEFAULT_MAX_STEPS, MEMORY_TOP_K, SUB_AGENT_MAX_STEPS, TOOL_RETRY_ATTEMPTS, TRUNC_LONG, TRUNC_MEDIUM, TRUNC_SHORT
+from .config import DEFAULT_MAX_STEPS, DEFAULT_WINDOW_SIZE, MEMORY_TOP_K, SUB_AGENT_MAX_STEPS, TOOL_RETRY_ATTEMPTS, TRUNC_LONG, TRUNC_MEDIUM, TRUNC_SHORT
 from .console import print_event
+from .context import ContextComposer, SessionMetadata
 from .default_tools import final_answer as _FINAL_ANSWER_TOOL
 from .memory import MemoryHit, StorePolicy
 from .prompts import SYSTEM_PROMPT
@@ -23,10 +24,13 @@ logger = logging.getLogger(__name__)
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, max_messages=DEFAULT_MAX_MESSAGES, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None):
+    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None):
         self.model = model
         self.max_steps = max_steps
-        self.max_messages = max_messages
+        self.window_size = window_size
+        self.composer = ContextComposer()
+        self.summary_block = ""
+        self._summarized_upto = 0
         self.stream = stream
         self.system_prompt = system_prompt or SYSTEM_PROMPT
         self.console = Console(force_terminal=True)
@@ -176,9 +180,10 @@ class Agent:
         return f"Error: unknown tool '{name}'"
 
     def _get_trimmed_messages(self, messages):
-        if len(messages) <= self.max_messages:
+        """滑动窗口：system + 最近 (window_size - 1) 条原文。"""
+        if len(messages) <= self.window_size:
             return messages
-        return [messages[0], messages[1]] + messages[-(self.max_messages - 2):]
+        return [messages[0]] + messages[-(self.window_size - 1):]
 
     def _summarize_messages(self, messages):
         parts = []
@@ -215,12 +220,50 @@ class Agent:
             logger.debug("记忆检索失败: %s", e)
             return []
 
-    def _inject_memory(self, task: str) -> str:
+    def _recall_text(self, task: str) -> str:
+        """L5 召回层文本（MVP 保留现有向量召回）。"""
         history = self._retrieve_memory(task)
         if not history:
-            return self.system_prompt
-        mem_lines = "\n".join(f"- {h.task} → {h.document[:TRUNC_SHORT]}" for h in history)
-        return f"{self.system_prompt}\n\n[相关历史记忆，供参考：]\n{mem_lines}"
+            return ""
+        return "\n".join(f"- {h.task} → {h.document[:TRUNC_SHORT]}" for h in history)
+
+    def _update_rolling_summary(self, overflow):
+        """将新滑出窗口的消息增量摘要，追加到摘要块（L3）。"""
+        if not overflow:
+            return
+        new_messages = overflow[self._summarized_upto:]
+        if not new_messages:
+            return
+        new_summary = self._summarize_messages(new_messages)
+        if new_summary:
+            self.summary_block = self.summary_block + "\n\n" + new_summary if self.summary_block else new_summary
+        self._summarized_upto = len(overflow)
+
+    def _build_context(self, messages):
+        """滑动窗口 + 滚动摘要 + 分层组装（L3/L4）。"""
+        if messages and messages[0].get("role") == "system":
+            system_msg = messages[0]
+            rest = messages[1:]
+        else:
+            system_msg = {"role": "system", "content": self.system_prompt}
+            rest = messages
+
+        capacity = self.window_size - 1
+        if len(rest) > capacity:
+            window = rest[-capacity:]
+            overflow = rest[:-capacity]
+        else:
+            window = rest
+            overflow = []
+
+        self._update_rolling_summary(overflow)
+
+        return self.composer.compose(
+            system_prompt=system_msg.get("content") or self.system_prompt,
+            recall=getattr(self, "_recall", ""),
+            summary=self.summary_block,
+            window=window,
+        )
 
     def _event(self, type_: str, **kw) -> dict:
         ev = {"type": type_, "agent": self.name}
@@ -298,7 +341,7 @@ class Agent:
                 tools=sub_tools,
                 name=name,
                 max_steps=min(SUB_AGENT_MAX_STEPS, self.max_steps),
-                max_messages=self.max_messages,
+                window_size=self.window_size,
                 allow_delegation=False,
                 registry=registry,
             )
@@ -319,6 +362,8 @@ class Agent:
                     self.session_id,
                     messages if messages is not None else self._last_messages,
                     turns=turns,
+                    summary=self.summary_block,
+                    summarized_upto=self._summarized_upto,
                 )
             except Exception as e:
                 logger.debug("检查点保存失败: %s", e)
@@ -354,11 +399,19 @@ class Agent:
 
     def run_stream(self, task: str, delegation_id: str | None = None):
         """核心执行逻辑的 generator。只 yield 事件，不打印，并收集本轮事件到 _current_turn。"""
-        turn = {"user": task, "events": []}
-        self._current_turn = turn
-        for ev in self._run_stream_inner(task, delegation_id):
-            turn["events"].append(ev)
-            yield ev
+        self._session_meta = SessionMetadata(
+            session_id=self.session_id,
+            agent_name=self.name,
+            model=getattr(self.model, "model_id", None) or type(self.model).__name__,
+        )
+        try:
+            turn = {"user": task, "events": []}
+            self._current_turn = turn
+            for ev in self._run_stream_inner(task, delegation_id):
+                turn["events"].append(ev)
+                yield ev
+        finally:
+            self._session_meta = None
 
     def _run_stream_inner(self, task: str, delegation_id: str | None = None):
         """核心执行逻辑的 generator。只 yield 事件，不打印。
@@ -379,18 +432,26 @@ class Agent:
         history = self._retrieve_memory(task)
         if history:
             yield self._event("memory", hits=[asdict(h) for h in history])
+        self._recall = self._recall_text(task)
+        self.summary_block = ""
+        self._summarized_upto = 0
 
         saved = None
         if self.checkpoint and self.session_id:
             saved = self.checkpoint.load(self.session_id)
+            full = self.checkpoint.load_full(self.session_id) or {}
+            self.summary_block = full.get("summary", "")
+            self._summarized_upto = full.get("summarized_upto", 0)
         if saved:
             messages = list(saved)
-            if messages and messages[0].get("role") != "system":
-                messages.insert(0, {"role": "system", "content": self._inject_memory(task)})
+            if messages and messages[0].get("role") == "system":
+                messages[0] = {"role": "system", "content": self.system_prompt}
+            else:
+                messages.insert(0, {"role": "system", "content": self.system_prompt})
             messages = messages + [{"role": "user", "content": task}]
         else:
             messages = [
-                {"role": "system", "content": self._inject_memory(task)},
+                {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": task},
             ]
         self._last_messages = messages
@@ -399,9 +460,9 @@ class Agent:
         for step in range(1, self.max_steps + 1):
             yield self._event("step", step=step, max_steps=self.max_steps)
 
-            trimmed = self._get_trimmed_messages(messages)
+            context = self._build_context(messages)
             tools_schema = self._build_tools_schema()
-            msg = yield from self._generate_stream(trimmed, tools_schema, delegation_id=delegation_id)
+            msg = yield from self._generate_stream(context, tools_schema, delegation_id=delegation_id)
             text = msg.content or ""
 
             if not msg.tool_calls:

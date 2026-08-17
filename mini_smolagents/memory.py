@@ -115,11 +115,13 @@ class Checkpoint:
         self._validate_session_id(session_id)
         return self.base_dir / f"{session_id}.json"
 
-    def save(self, session_id: str, messages: list[dict], turns: list[dict] | None = None):
+    def save(self, session_id: str, messages: list[dict], turns: list[dict] | None = None, summary: str = "", summarized_upto: int = 0):
         data = {
             "session_id": session_id,
             "messages": messages,
             "turns": turns or [],
+            "summary": summary,
+            "summarized_upto": summarized_upto,
             "saved_at": datetime.now().isoformat(),
         }
         path = self._path(session_id)
