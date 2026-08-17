@@ -1,11 +1,11 @@
-"""用户档案卡（L2）：单 JSON 文件 + 固定 schema + 受限写操作。"""
+"""用户档案卡（L2）：单 JSON 文件 + 固定 schema + 受限写操作。facts 由 FactsMemory 向量库承载。"""
 import json
 import logging
 import os
 from datetime import datetime
 from pathlib import Path
 
-from .config import DEFAULT_MAX_FACTS, DEFAULT_PROFILE_MAX_BYTES, PROFILE_FILENAME, TRUNC_MEDIUM
+from .config import DEFAULT_PROFILE_MAX_BYTES, PROFILE_FILENAME, TRUNC_MEDIUM
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,6 @@ _SCHEMA = {
     "role": str,
     "preferences": dict,
     "constraints": list,
-    "facts": list,
     "feedback": list,
     "style_prefs": dict,
 }
@@ -24,7 +23,6 @@ _EMPTY = {
     "role": "",
     "preferences": {},
     "constraints": [],
-    "facts": [],
     "feedback": [],
     "style_prefs": {},
 }
@@ -101,12 +99,6 @@ class Profile:
         prefs = {**self.data["style_prefs"], key: value}
         return self._commit({**self.data, "style_prefs": prefs})
 
-    def append_facts(self, items) -> bool:
-        items = _coerce_items(items)
-        if not items:
-            return False
-        return self._commit({**self.data, "facts": self.data["facts"] + items})
-
     def append_feedback(self, items) -> bool:
         items = _coerce_items(items)
         if not items:
@@ -123,11 +115,6 @@ class Profile:
                 merged.append(it)
         return self._commit({**self.data, "constraints": merged})
 
-    def set_facts(self, items) -> bool:
-        """合并治理用：整体替换 facts 列表（仍走校验 + 上限）。"""
-        items = _coerce_items(items)
-        return self._commit({**self.data, "facts": items})
-
     def to_text(self) -> str:
         d = self.data
         lines = []
@@ -141,8 +128,6 @@ class Profile:
             lines.append(f"- 风格偏好：{json.dumps(d['style_prefs'], ensure_ascii=False)}")
         if d["constraints"]:
             lines.append("- 约束：" + "；".join(d["constraints"]))
-        if d["facts"]:
-            lines.append("- 已知事实：" + "；".join(d["facts"]))
         if d["feedback"]:
             lines.append("- 历史反馈：" + "；".join(d["feedback"]))
         return "\n".join(lines)

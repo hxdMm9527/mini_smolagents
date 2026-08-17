@@ -11,10 +11,11 @@ if sys.stdout.encoding.lower() != "utf-8":
 from rich.console import Console
 
 from .a2a import AgentRegistry
-from .config import DEFAULT_MAX_FACTS, DEFAULT_MAX_STEPS, DEFAULT_WINDOW_SIZE, MEMORY_TOP_K, SUB_AGENT_MAX_STEPS, TOOL_RETRY_ATTEMPTS, TRUNC_LONG, TRUNC_MEDIUM, TRUNC_SHORT
+from .config import DEFAULT_MAX_STEPS, DEFAULT_WINDOW_SIZE, FACTS_TOP_K, MEMORY_TOP_K, SUB_AGENT_MAX_STEPS, TOOL_RETRY_ATTEMPTS, TRUNC_LONG, TRUNC_MEDIUM, TRUNC_SHORT
 from .console import print_event
 from .context import ContextComposer, SessionMetadata
 from .default_tools import final_answer as _FINAL_ANSWER_TOOL
+from .facts import FactsMemory
 from .memory import MemoryHit, StorePolicy
 from .profile import Profile
 from .prompts import SYSTEM_PROMPT
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None, profile_dir=None):
+    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None, profile_dir=None, facts_memory=None):
         self.model = model
         self.max_steps = max_steps
         self.window_size = window_size
@@ -44,6 +45,7 @@ class Agent:
         self.store_policy = store_policy or StorePolicy()
         self.profile_dir = profile_dir
         self._profile = None
+        self.facts_memory = facts_memory
         self.tools = {}
         self._sub_results: dict[str, str] = {}
         self._delegation_count = 0
@@ -164,10 +166,16 @@ class Agent:
                 (applied if profile.append_feedback(feedback) else rejected).append("feedback")
             if facts:
                 raw = facts if isinstance(facts, list) else [facts]
-                combined = list(profile.data["facts"]) + [str(x).strip() for x in raw if str(x).strip()]
-                if len(combined) > DEFAULT_MAX_FACTS:
-                    combined = agent_self._merge_facts(combined)
-                (applied if profile.set_facts(combined) else rejected).append("facts")
+                items = [str(x).strip() for x in raw if str(x).strip()]
+                if agent_self.facts_memory is not None and items:
+                    added = sum(1 for f in items if agent_self.facts_memory.add(f))
+                    skipped = len(items) - added
+                    if added:
+                        applied.append(f"facts(写入 {added} 条)")
+                    if skipped:
+                        rejected.append(f"facts(去重跳过 {skipped} 条)")
+                elif items:
+                    rejected.append("facts(存储未启用)")
             message = f"档案卡已更新：{', '.join(applied)}" if applied else "档案卡无变更"
             if rejected:
                 message += f"；被拒绝：{', '.join(rejected)}"
@@ -194,36 +202,25 @@ class Agent:
             func=update_profile,
         )
 
-    def _merge_facts(self, facts):
-        if len(facts) <= DEFAULT_MAX_FACTS:
-            return facts
-        merge_prompt = (
-            f"以下是用户的已知事实列表，请合并重复项、提炼关键信息，压缩到不超过 {DEFAULT_MAX_FACTS} 条。"
-            "只输出事实，每条一行，不要编号。\n\n" + "\n".join(f"- {f}" for f in facts)
-        )
-        merge_msgs = [
-            {"role": "system", "content": "你是善于整理用户档案的助手。"},
-            {"role": "user", "content": merge_prompt},
-        ]
-        try:
-            resp = self.model.generate(merge_msgs)
-            lines = [
-                ln.strip().lstrip("-* ").strip()
-                for ln in (resp.content or "").splitlines()
-                if ln.strip()
-            ]
-            if lines:
-                return lines[:DEFAULT_MAX_FACTS]
-        except Exception as e:
-            logger.debug("facts 合并失败: %s", e)
-        return facts[-DEFAULT_MAX_FACTS:]
-
     def _commit_profile(self):
         if self._profile is not None and self._profile.dirty:
             try:
                 self._profile.save(self.profile_dir)
             except Exception as e:
                 logger.debug("档案卡保存失败: %s", e)
+
+    def _retrieve_facts(self, task: str) -> str:
+        if not self.facts_memory:
+            return ""
+        try:
+            facts = self.facts_memory.search(task, top_k=FACTS_TOP_K)
+        except Exception as e:
+            logger.debug("facts 召回失败: %s", e)
+            return ""
+        if not facts:
+            return ""
+        return "\n".join(f"- {f}" for f in facts)
+
     def _build_tools_schema(self):
         schema = []
         for t in self.tools.values():
@@ -353,6 +350,7 @@ class Agent:
         return self.composer.compose(
             system_prompt=system_msg.get("content") or self.system_prompt,
             profile=self._profile.to_text() if self._profile else "",
+            facts=getattr(self, "_facts", ""),
             recall=getattr(self, "_recall", ""),
             summary=self.summary_block,
             window=window,
@@ -526,6 +524,7 @@ class Agent:
         if history:
             yield self._event("memory", hits=[asdict(h) for h in history])
         self._recall = self._recall_text(task)
+        self._facts = self._retrieve_facts(task)
         self._profile = Profile.load(self.profile_dir) if self.profile_dir else None
         self.summary_block = ""
         self._summarized_upto = 0

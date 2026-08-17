@@ -41,7 +41,7 @@ class ContextComposer:
     def __init__(self, token_budget: int = DEFAULT_TOKEN_BUDGET):
         self.token_budget = token_budget
 
-    def compose(self, system_prompt: str, profile: str = "", recall: str = "",
+    def compose(self, system_prompt: str, profile: str = "", facts: str = "", recall: str = "",
                 summary: str = "", window: list | None = None) -> list[dict]:
         window = window or []
 
@@ -50,11 +50,14 @@ class ContextComposer:
         flexible = max(0, self.token_budget - fixed)
 
         summary = _truncate_tokens(summary, flexible)
-        recall = _truncate_tokens(recall, max(0, flexible - estimate_tokens(summary)))
+        facts = _truncate_tokens(facts, max(0, flexible - estimate_tokens(summary)))
+        recall = _truncate_tokens(recall, max(0, flexible - estimate_tokens(summary) - estimate_tokens(facts)))
 
         system_content = system_prompt
         if profile:
             system_content += f"\n\n[用户档案]\n{profile}"
+        if facts:
+            system_content += f"\n\n[用户相关事实]\n{facts}"
         if recall:
             system_content += f"\n\n[相关历史记忆，供参考：]\n{recall}"
 

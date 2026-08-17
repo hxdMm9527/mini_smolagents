@@ -73,3 +73,15 @@ def test_compose_profile_after_system_prompt():
     )
     content = msgs[0]["content"]
     assert content.index("系统指令") < content.index("档案内容") < content.index("召回内容")
+
+def test_compose_facts_between_profile_and_recall():
+    composer = ContextComposer()
+    msgs = composer.compose(
+        system_prompt="系统指令",
+        profile="档案",
+        facts="事实",
+        recall="召回",
+        window=[{"role": "user", "content": "u"}],
+    )
+    content = msgs[0]["content"]
+    assert content.index("系统指令") < content.index("档案") < content.index("事实") < content.index("召回")
