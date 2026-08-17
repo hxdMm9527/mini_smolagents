@@ -11,11 +11,12 @@ if sys.stdout.encoding.lower() != "utf-8":
 from rich.console import Console
 
 from .a2a import AgentRegistry
-from .config import DEFAULT_MAX_STEPS, DEFAULT_WINDOW_SIZE, MEMORY_TOP_K, SUB_AGENT_MAX_STEPS, TOOL_RETRY_ATTEMPTS, TRUNC_LONG, TRUNC_MEDIUM, TRUNC_SHORT
+from .config import DEFAULT_MAX_FACTS, DEFAULT_MAX_STEPS, DEFAULT_WINDOW_SIZE, MEMORY_TOP_K, SUB_AGENT_MAX_STEPS, TOOL_RETRY_ATTEMPTS, TRUNC_LONG, TRUNC_MEDIUM, TRUNC_SHORT
 from .console import print_event
 from .context import ContextComposer, SessionMetadata
 from .default_tools import final_answer as _FINAL_ANSWER_TOOL
 from .memory import MemoryHit, StorePolicy
+from .profile import Profile
 from .prompts import SYSTEM_PROMPT
 from .types import ModelResponse, Tool
 
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None):
+    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None, profile_dir=None):
         self.model = model
         self.max_steps = max_steps
         self.window_size = window_size
@@ -41,6 +42,8 @@ class Agent:
         self.session_id = session_id
         self.registry = registry
         self.store_policy = store_policy or StorePolicy()
+        self.profile_dir = profile_dir
+        self._profile = None
         self.tools = {}
         self._sub_results: dict[str, str] = {}
         self._delegation_count = 0
@@ -64,6 +67,9 @@ class Agent:
 
         if "final_answer" not in self.tools:
             self.tools["final_answer"] = _FINAL_ANSWER_TOOL
+
+        if profile_dir:
+            self.tools["update_profile"] = self._build_update_profile_tool()
 
     def _ensure_registry(self):
         if self.registry is None:
@@ -132,6 +138,92 @@ class Agent:
             func=create_sub_agent,
         )
 
+    def _build_update_profile_tool(self):
+        agent_self = self
+
+        def update_profile(name=None, role=None, preferences=None, constraints=None,
+                           facts=None, feedback=None, style_prefs=None):
+            profile = agent_self._profile
+            if profile is None:
+                return "档案卡未启用，本次更新被忽略。"
+            applied = []
+            rejected = []
+            if name is not None:
+                (applied if profile.set_name(name) else rejected).append("name")
+            if role is not None:
+                (applied if profile.set_role(role) else rejected).append("role")
+            if isinstance(preferences, dict):
+                for k, v in preferences.items():
+                    (applied if profile.set_preference(k, v) else rejected).append(f"preference[{k}]")
+            if isinstance(style_prefs, dict):
+                for k, v in style_prefs.items():
+                    (applied if profile.set_style_pref(k, v) else rejected).append(f"style_pref[{k}]")
+            if constraints:
+                (applied if profile.append_constraints(constraints) else rejected).append("constraints")
+            if feedback:
+                (applied if profile.append_feedback(feedback) else rejected).append("feedback")
+            if facts:
+                raw = facts if isinstance(facts, list) else [facts]
+                combined = list(profile.data["facts"]) + [str(x).strip() for x in raw if str(x).strip()]
+                if len(combined) > DEFAULT_MAX_FACTS:
+                    combined = agent_self._merge_facts(combined)
+                (applied if profile.set_facts(combined) else rejected).append("facts")
+            message = f"档案卡已更新：{', '.join(applied)}" if applied else "档案卡无变更"
+            if rejected:
+                message += f"；被拒绝：{', '.join(rejected)}"
+            return message
+
+        return Tool(
+            name="update_profile",
+            description=(
+                "更新用户档案卡，记住用户的姓名、角色、偏好、约束、事实、反馈和风格偏好。"
+                "当你了解到用户的长期信息时调用此工具。只需传入要更新的字段。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "用户姓名（仅首次写入，之后忽略）"},
+                    "role": {"type": "string", "description": "用户角色（仅首次写入，之后忽略）"},
+                    "preferences": {"type": "object", "description": "用户偏好，按 key 覆盖"},
+                    "constraints": {"type": "array", "items": {"type": "string"}, "description": "约束条件，追加去重"},
+                    "facts": {"type": "array", "items": {"type": "string"}, "description": "用户事实，追加"},
+                    "feedback": {"type": "array", "items": {"type": "string"}, "description": "用户反馈，追加"},
+                    "style_prefs": {"type": "object", "description": "风格偏好，按 key 覆盖"},
+                },
+            },
+            func=update_profile,
+        )
+
+    def _merge_facts(self, facts):
+        if len(facts) <= DEFAULT_MAX_FACTS:
+            return facts
+        merge_prompt = (
+            f"以下是用户的已知事实列表，请合并重复项、提炼关键信息，压缩到不超过 {DEFAULT_MAX_FACTS} 条。"
+            "只输出事实，每条一行，不要编号。\n\n" + "\n".join(f"- {f}" for f in facts)
+        )
+        merge_msgs = [
+            {"role": "system", "content": "你是善于整理用户档案的助手。"},
+            {"role": "user", "content": merge_prompt},
+        ]
+        try:
+            resp = self.model.generate(merge_msgs)
+            lines = [
+                ln.strip().lstrip("-* ").strip()
+                for ln in (resp.content or "").splitlines()
+                if ln.strip()
+            ]
+            if lines:
+                return lines[:DEFAULT_MAX_FACTS]
+        except Exception as e:
+            logger.debug("facts 合并失败: %s", e)
+        return facts[-DEFAULT_MAX_FACTS:]
+
+    def _commit_profile(self):
+        if self._profile is not None and self._profile.dirty:
+            try:
+                self._profile.save(self.profile_dir)
+            except Exception as e:
+                logger.debug("档案卡保存失败: %s", e)
     def _build_tools_schema(self):
         schema = []
         for t in self.tools.values():
@@ -260,6 +352,7 @@ class Agent:
 
         return self.composer.compose(
             system_prompt=system_msg.get("content") or self.system_prompt,
+            profile=self._profile.to_text() if self._profile else "",
             recall=getattr(self, "_recall", ""),
             summary=self.summary_block,
             window=window,
@@ -318,12 +411,12 @@ class Agent:
         tool_names = [t.strip() for t in tools_str.split(",") if t.strip()]
         sub_tools = []
         for tn in tool_names:
-            if tn in self.tools and tn not in ("create_sub_agent", "final_answer"):
+            if tn in self.tools and tn not in ("create_sub_agent", "final_answer", "update_profile"):
                 sub_tools.append(self.tools[tn])
         if not sub_tools:
             sub_tools = [
                 t for t in self.tools.values()
-                if t.name not in ("create_sub_agent", "final_answer")
+                if t.name not in ("create_sub_agent", "final_answer", "update_profile")
             ]
 
         if name in self._sub_results and self._sub_results[name]:
@@ -433,6 +526,7 @@ class Agent:
         if history:
             yield self._event("memory", hits=[asdict(h) for h in history])
         self._recall = self._recall_text(task)
+        self._profile = Profile.load(self.profile_dir) if self.profile_dir else None
         self.summary_block = ""
         self._summarized_upto = 0
 
@@ -474,6 +568,7 @@ class Agent:
                     final = text or self._summarize_messages(messages)
                     yield self._event("note", content=note)
                     yield self._event("done", content=final, stored=False, session_id=self.session_id)
+                    self._commit_profile()
                     self._save_checkpoint(messages)
                     return
                 continue
@@ -542,6 +637,7 @@ class Agent:
                         self.memory.add(task, final)
                         stored = True
                     yield self._event("done", content=final, stored=stored, session_id=self.session_id)
+                    self._commit_profile()
                     self._save_checkpoint(messages)
                     return
 

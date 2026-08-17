@@ -1,6 +1,8 @@
 from unittest.mock import MagicMock
 
 from mini_smolagents import Agent, OpenAIModel, python_interpreter, tool, web_search
+from mini_smolagents.config import DEFAULT_MAX_FACTS
+from mini_smolagents.profile import Profile
 from mini_smolagents.types import ModelResponse, Tool, ToolCall
 
 
@@ -404,3 +406,126 @@ def test_rolling_summary_incremental():
     agent._build_context(msgs2)
     assert agent._summarize_messages.call_count == 2
     assert agent.summary_block == "摘要A\n\n摘要B"
+
+
+def test_update_profile_tool_exists():
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = Agent(model=model, tools=[dummy], profile_dir=".memory")
+    assert "update_profile" in agent.tools
+
+
+def test_update_profile_not_registered_without_profile_dir():
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = Agent(model=model, tools=[dummy])
+    assert "update_profile" not in agent.tools
+
+
+def test_update_profile_partial_update():
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = Agent(model=model, tools=[dummy], profile_dir=".memory")
+    agent._profile = Profile()
+    result = agent.tools["update_profile"].func(facts=["喜欢 Python"])
+    assert "facts" in result
+    assert agent._profile.data["facts"] == ["喜欢 Python"]
+    assert agent._profile.data["name"] == ""
+
+
+def test_update_profile_final_answer_commits(tmp_path):
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="c1", name="update_profile", arguments={"facts": ["在杭州"]})]),
+        ModelResponse(tool_calls=[ToolCall(id="c2", name="final_answer", arguments={"answer": "记住了"})]),
+    ])
+    agent = Agent(model=model, tools=[dummy], profile_dir=str(tmp_path))
+    result = agent.run("记住我在杭州")
+    assert result == "记住了"
+    loaded = Profile.load(str(tmp_path))
+    assert loaded.data["facts"] == ["在杭州"]
+
+
+def test_update_profile_max_steps_not_committed(tmp_path):
+    @tool
+    def loop() -> str:
+        return "loop"
+
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="c1", name="update_profile", arguments={"facts": ["在杭州"]})]),
+        ModelResponse(tool_calls=[ToolCall(id="c2", name="loop", arguments={})]),
+        ModelResponse(tool_calls=[ToolCall(id="c3", name="loop", arguments={})]),
+    ])
+    agent = Agent(model=model, tools=[loop], max_steps=3, profile_dir=str(tmp_path))
+    agent._summarize_messages = MagicMock(return_value="总结")
+    agent.run("测试")
+    assert not (tmp_path / "user_profile.json").exists()
+
+
+def test_sub_agent_no_update_profile():
+    @tool
+    def search(q: str) -> str:
+        return f"搜索: {q}"
+
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="c1", name="create_sub_agent", arguments={"name": "helper", "task": "找资料"})]),
+        ModelResponse(tool_calls=[ToolCall(id="c2", name="final_answer", arguments={"answer": "子任务结果"})]),
+        ModelResponse(tool_calls=[ToolCall(id="c3", name="final_answer", arguments={"answer": "完成"})]),
+    ])
+    manager = Agent(model=model, tools=[search], profile_dir=".memory")
+    assert "update_profile" in manager.tools
+
+    sub_agent, task, err = manager._prepare_sub_agent("helper", "找资料", "")
+    assert err is None
+    assert "update_profile" not in sub_agent.tools
+
+
+def test_merge_facts_under_limit_noop():
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = MagicMock(spec=OpenAIModel)
+    agent = Agent(model=model, tools=[dummy])
+    facts = ["f1", "f2"]
+    assert agent._merge_facts(facts) == facts
+
+
+def test_merge_facts_llm_compress():
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = FakeModel([ModelResponse(content="- 合并1\n- 合并2\n")])
+    agent = Agent(model=model, tools=[dummy])
+    facts = [f"事实{i}" for i in range(25)]
+    result = agent._merge_facts(facts)
+    assert result == ["合并1", "合并2"]
+
+
+def test_merge_facts_failure_truncates():
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    class FailingModel:
+        def generate(self, messages, tools=None):
+            raise RuntimeError("llm down")
+
+    agent = Agent(model=FailingModel(), tools=[dummy])
+    facts = [f"事实{i}" for i in range(25)]
+    result = agent._merge_facts(facts)
+    assert len(result) == DEFAULT_MAX_FACTS
+    assert result == facts[-DEFAULT_MAX_FACTS:]

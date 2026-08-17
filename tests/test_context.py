@@ -61,3 +61,15 @@ def test_compose_window_never_truncated():
     window = [{"role": "user", "content": "原文内容不能丢" * 10}]
     msgs = composer.compose(system_prompt="S", summary="A" * 100, window=window)
     assert msgs[-1] == window[0]
+
+
+def test_compose_profile_after_system_prompt():
+    composer = ContextComposer()
+    msgs = composer.compose(
+        system_prompt="系统指令",
+        profile="档案内容",
+        recall="召回内容",
+        window=[{"role": "user", "content": "u"}],
+    )
+    content = msgs[0]["content"]
+    assert content.index("系统指令") < content.index("档案内容") < content.index("召回内容")
