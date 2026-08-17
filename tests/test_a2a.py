@@ -1,8 +1,9 @@
-from types import SimpleNamespace
+import json
 
 from mini_smolagents.a2a import AgentRegistry, Task
 from mini_smolagents.agent import Agent
 from mini_smolagents.tools import tool
+from mini_smolagents.types import ModelResponse, ToolCall
 
 
 @tool
@@ -13,18 +14,10 @@ def fake_answer(answer) -> str:
 
 class FakeModel:
     def generate(self, messages, tools=None):
-        msg = SimpleNamespace(
+        return ModelResponse(
             content="答",
-            tool_calls=[
-                SimpleNamespace(
-                    id="1",
-                    type="function",
-                    function=SimpleNamespace(name="final_answer", arguments='{"answer": "42"}'),
-                )
-            ],
+            tool_calls=[ToolCall(id="1", name="final_answer", arguments={"answer": "42"})],
         )
-        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
-
 
 class ScriptModel:
     """按调用次数依次返回预设响应。"""
@@ -36,18 +29,11 @@ class ScriptModel:
     def generate(self, messages, tools=None):
         self.calls.append(messages)
         step = self.script[min(len(self.calls) - 1, len(self.script) - 1)]
-        tool_calls = []
-        for tid, name, args in step.get("tools", []):
-            tool_calls.append(SimpleNamespace(
-                id=tid, type="function",
-                function=SimpleNamespace(name=name, arguments=args),
-            ))
-        msg = SimpleNamespace(
-            content=step.get("content", ""),
-            tool_calls=tool_calls or None,
-        )
-        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
-
+        tool_calls = [
+            ToolCall(id=tid, name=name, arguments=json.loads(args))
+            for tid, name, args in step.get("tools", [])
+        ]
+        return ModelResponse(content=step.get("content", ""), tool_calls=tool_calls or None)
 
 def make_agent(name, desc, model=None):
     return Agent(model=model or FakeModel(), tools=[], name=name, description=desc)

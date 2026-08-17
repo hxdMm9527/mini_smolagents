@@ -1,7 +1,21 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from mini_smolagents import Agent, OpenAIModel, python_interpreter, tool, web_search
-from mini_smolagents.types import Tool
+from mini_smolagents.types import ModelResponse, Tool, ToolCall
+
+
+class FakeModel:
+    """测试替身：按顺序返回预设的 ModelResponse，无流式接口。"""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def generate(self, messages, tools=None):
+        self.calls.append(messages)
+        if not self.responses:
+            raise AssertionError("FakeModel: 没有更多预设响应")
+        return self.responses.pop(0)
 
 
 def test_tool_decorator():
@@ -18,7 +32,7 @@ def test_tool_decorator():
     assert "b" in calc.parameters["properties"]
     assert calc.parameters["properties"]["a"]["type"] == "integer"
     assert calc.parameters["properties"]["b"]["type"] == "number"
-    assert calc.parameters["required"] == ["a"]  # b 有默认值，不在 required
+    assert calc.parameters["required"] == ["a"]
     assert calc.func(a=3, b=4.0) == "7.0"
 
 
@@ -60,117 +74,52 @@ def test_agent_init_auto_adds_final_answer():
 
 
 def test_agent_run_single_step():
-    """Mock LLM 返回 final_answer，验证一次就结束"""
+    """FakeModel 返回 final_answer，验证一次就结束"""
 
     @tool
     def dummy() -> str:
         return "ok"
 
-    model = MagicMock(spec=OpenAIModel)
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="call_test", name="final_answer", arguments={"answer": "任务完成"})]),
+    ])
     agent = Agent(model=model, tools=[dummy])
-
-    # 模拟 LLM 返回: final_answer(answer="result")
-    mock_msg = MagicMock()
-    mock_msg.content = None
-
-    mock_tc = MagicMock()
-    mock_tc.id = "call_test"
-    mock_tc.function.name = "final_answer"
-    mock_tc.function.arguments = '{"answer": "任务完成"}'
-
-    mock_msg.tool_calls = [mock_tc]
-
-    mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message = mock_msg
-
-    model.generate.return_value = mock_response
 
     result = agent.run("测试任务")
     assert result == "任务完成"
-    model.generate.assert_called_once()
+    assert len(model.calls) == 1
 
 
 def test_agent_run_multi_step():
-    """Mock LLM 先调 dummy，再调 final_answer，验证两步"""
+    """FakeModel 先调 lookup，再调 final_answer，验证两步"""
 
     @tool
     def lookup(query: str) -> str:
         return f"查到: {query}"
 
-    model = MagicMock(spec=OpenAIModel)
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="call_1", name="lookup", arguments={"query": "test"})]),
+        ModelResponse(tool_calls=[ToolCall(id="call_2", name="final_answer", arguments={"answer": "search result"})]),
+    ])
     agent = Agent(model=model, tools=[lookup])
-
-    # Step 1: lookup
-    msg1 = MagicMock()
-    msg1.content = None
-    tc1 = MagicMock()
-    tc1.id = "call_1"
-    tc1.function.name = "lookup"
-    tc1.function.arguments = '{"query": "test"}'
-    msg1.tool_calls = [tc1]
-
-    # Step 2: final_answer
-    msg2 = MagicMock()
-    msg2.content = None
-    tc2 = MagicMock()
-    tc2.id = "call_2"
-    tc2.function.name = "final_answer"
-    tc2.function.arguments = '{"answer": "search result"}'
-    msg2.tool_calls = [tc2]
-
-    resp1 = MagicMock()
-    resp1.choices = [MagicMock()]
-    resp1.choices[0].message = msg1
-
-    resp2 = MagicMock()
-    resp2.choices = [MagicMock()]
-    resp2.choices[0].message = msg2
-
-    model.generate.side_effect = [resp1, resp2]
 
     result = agent.run("测试多步任务")
     assert result == "search result"
-    assert model.generate.call_count == 2
+    assert len(model.calls) == 2
 
 
 def test_agent_tool_error_retry():
-    """Mock LLM 调一个报错的工具，验证重试"""
+    """FakeModel 调一个报错的工具，验证重试"""
 
     @tool
     def flaky() -> str:
         raise ValueError("总是失败")
 
-    model = MagicMock(spec=OpenAIModel)
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="call_1", name="flaky", arguments={})]),
+        ModelResponse(tool_calls=[ToolCall(id="call_2", name="final_answer", arguments={"answer": "工具失败后仍能继续"})]),
+    ])
     agent = Agent(model=model, tools=[flaky])
-
-    # Step 1: flaky (失败)
-    msg1 = MagicMock()
-    msg1.content = None
-    tc1 = MagicMock()
-    tc1.id = "call_1"
-    tc1.function.name = "flaky"
-    tc1.function.arguments = "{}"
-    msg1.tool_calls = [tc1]
-
-    # Step 2: final_answer (LLM 看到错误后给答案)
-    msg2 = MagicMock()
-    msg2.content = None
-    tc2 = MagicMock()
-    tc2.id = "call_2"
-    tc2.function.name = "final_answer"
-    tc2.function.arguments = '{"answer": "工具失败后仍能继续"}'
-    msg2.tool_calls = [tc2]
-
-    resp1 = MagicMock()
-    resp1.choices = [MagicMock()]
-    resp1.choices[0].message = msg1
-
-    resp2 = MagicMock()
-    resp2.choices = [MagicMock()]
-    resp2.choices[0].message = msg2
-
-    model.generate.side_effect = [resp1, resp2]
 
     result = agent.run("测试重试")
     assert result == "工具失败后仍能继续"
@@ -183,22 +132,8 @@ def test_agent_max_steps():
     def loop() -> str:
         return "loop"
 
-    model = MagicMock(spec=OpenAIModel)
+    model = FakeModel([ModelResponse(tool_calls=[ToolCall(id="call_x", name="loop", arguments={})])] * 3)
     agent = Agent(model=model, tools=[loop], max_steps=3)
-
-    msg = MagicMock()
-    msg.content = None
-    tc = MagicMock()
-    tc.id = "call_x"
-    tc.function.name = "loop"
-    tc.function.arguments = "{}"
-    msg.tool_calls = [tc]
-
-    resp = MagicMock()
-    resp.choices = [MagicMock()]
-    resp.choices[0].message = msg
-
-    model.generate.return_value = resp
 
     agent._summarize_messages = MagicMock(return_value="总结：任务未完成")
     result = agent.run("死循环任务")
@@ -258,7 +193,7 @@ def test_trim_messages_not_needed():
 
 
 def test_code_agent_extract_code():
-    from mini_smolagents.agent import _extract_code
+    from mini_smolagents.code_agent import _extract_code
 
     assert _extract_code("<code>print(1)</code>") == "print(1)"
     assert _extract_code("think...\n<code>\nx = 1\n</code>\n") == "x = 1"
@@ -268,7 +203,7 @@ def test_code_agent_extract_code():
 
 
 def test_code_agent_final_answer_exception():
-    from mini_smolagents.agent import CodeAgent, _StopExec
+    from mini_smolagents.code_agent import CodeAgent, _StopExec
 
     model = MagicMock(spec=OpenAIModel)
     agent = CodeAgent(model=model, tools=[])
@@ -291,18 +226,12 @@ def test_code_agent_run_with_final_answer():
     def calc(expression: str) -> str:
         return str(eval(expression))
 
-    model = MagicMock(spec=OpenAIModel)
+    code = """<code>
+result = calc('5 + 3')
+final_answer(f'The answer is {result}')
+</code>"""
+    model = FakeModel([ModelResponse(content=code)])
     agent = CodeAgent(model=model, tools=[calc])
-
-    msg = MagicMock()
-    msg.content = "<code>\nresult = calc('5 + 3')\nfinal_answer(f'The answer is {result}')\n</code>"
-    msg.tool_calls = None
-
-    resp = MagicMock()
-    resp.choices = [MagicMock()]
-    resp.choices[0].message = msg
-
-    model.generate.return_value = resp
 
     result = agent.run("5+3 等于多少？")
     assert "answer is 8" in result
@@ -317,26 +246,18 @@ def test_code_agent_code_error():
     def lookup(query: str) -> str:
         return f"result for {query}"
 
-    model = MagicMock(spec=OpenAIModel)
+    bad_code = """<code>
+1 / 0
+</code>"""
+    good_code = """<code>
+result = lookup('hello')
+final_answer(result)
+</code>"""
+    model = FakeModel([
+        ModelResponse(content=bad_code),
+        ModelResponse(content=good_code),
+    ])
     agent = CodeAgent(model=model, tools=[lookup])
-
-    msg1 = MagicMock()
-    msg1.content = "<code>\n1 / 0\n</code>"
-    msg1.tool_calls = None
-
-    msg2 = MagicMock()
-    msg2.content = "<code>\nresult = lookup('hello')\nfinal_answer(result)\n</code>"
-    msg2.tool_calls = None
-
-    resp1 = MagicMock()
-    resp1.choices = [MagicMock()]
-    resp1.choices[0].message = msg1
-
-    resp2 = MagicMock()
-    resp2.choices = [MagicMock()]
-    resp2.choices[0].message = msg2
-
-    model.generate.side_effect = [resp1, resp2]
 
     result = agent.run("test")
     assert "result for hello" in result
@@ -367,49 +288,24 @@ def test_managed_agent_registration():
 
 
 def test_managed_agent_called_by_manager():
-    """主 Agent 调子 Agent，子 Agent 返回结果"""
+    """主 Agent 通过委托调子 Agent，子 Agent 返回结果后主 Agent 综合最终答案"""
 
     @tool
     def search(q: str) -> str:
         return f"搜索: {q}"
 
-    model = MagicMock(spec=OpenAIModel)
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="call_helper", name="helper", arguments={"task": "找资料"})]),
+        ModelResponse(tool_calls=[ToolCall(id="call_sub", name="final_answer", arguments={"answer": "找到的资料"})]),
+        ModelResponse(tool_calls=[ToolCall(id="call_done", name="final_answer", arguments={"answer": "任务完成，基于：找到的资料"})]),
+    ])
 
     sub = Agent(model=model, tools=[search], name="helper", description="助手")
-    sub.run = MagicMock(return_value="找到的资料")
-
     manager = Agent(model=model, tools=[], managed_agents=[sub])
 
-    msg1 = MagicMock()
-    msg1.content = None
-    tc1 = MagicMock()
-    tc1.id = "call_helper"
-    tc1.function.name = "helper"
-    tc1.function.arguments = '{"task": "找资料"}'
-    msg1.tool_calls = [tc1]
-
-    msg2 = MagicMock()
-    msg2.content = None
-    tc2 = MagicMock()
-    tc2.id = "call_done"
-    tc2.function.name = "final_answer"
-    tc2.function.arguments = '{"answer": "任务完成，基于：找到的资料"}'
-    msg2.tool_calls = [tc2]
-
-    resp1 = MagicMock()
-    resp1.choices = [MagicMock()]
-    resp1.choices[0].message = msg1
-
-    resp2 = MagicMock()
-    resp2.choices = [MagicMock()]
-    resp2.choices[0].message = msg2
-
-    model.generate.side_effect = [resp1, resp2]
-
     result = manager.run("复杂任务")
-    sub.run.assert_called_once_with("找资料")
     assert "任务完成" in result
-
+    assert len(model.calls) == 3
 
 def test_create_sub_agent_tool_exists():
     """验证 create_sub_agent 工具自动注入"""
@@ -433,40 +329,13 @@ def test_create_sub_agent_dynamic_delegation():
     def search(q: str) -> str:
         return f"搜索: {q}"
 
-    model = MagicMock(spec=OpenAIModel)
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="call_create", name="create_sub_agent", arguments={"name": "helper", "task": "找资料"})]),
+        ModelResponse(tool_calls=[ToolCall(id="call_sub", name="final_answer", arguments={"answer": "子任务结果"})]),
+        ModelResponse(tool_calls=[ToolCall(id="call_done", name="final_answer", arguments={"answer": "完成"})]),
+    ])
     manager = Agent(model=model, tools=[search])
 
-    # Mock create_sub_agent 返回固定值，避免真实创建子 Agent
-    manager.tools["create_sub_agent"].func = MagicMock(return_value="子任务结果")
-
-    msg1 = MagicMock()
-    msg1.content = None
-    tc1 = MagicMock()
-    tc1.id = "call_create"
-    tc1.function.name = "create_sub_agent"
-    tc1.function.arguments = '{"name": "helper", "task": "找资料"}'
-    msg1.tool_calls = [tc1]
-
-    msg2 = MagicMock()
-    msg2.content = None
-    tc2 = MagicMock()
-    tc2.id = "call_done"
-    tc2.function.name = "final_answer"
-    tc2.function.arguments = '{"answer": "完成"}'
-    msg2.tool_calls = [tc2]
-
-    resp1 = MagicMock()
-    resp1.choices = [MagicMock()]
-    resp1.choices[0].message = msg1
-
-    resp2 = MagicMock()
-    resp2.choices = [MagicMock()]
-    resp2.choices[0].message = msg2
-
-    model.generate.side_effect = [resp1, resp2]
-
     result = manager.run("复杂任务")
-    manager.tools["create_sub_agent"].func.assert_called_once_with(
-        name="helper", task="找资料"
-    )
     assert "完成" in result
+    assert len(model.calls) == 3

@@ -1,10 +1,11 @@
-﻿import tempfile
-from types import SimpleNamespace
+﻿import json
+import tempfile
 from pathlib import Path
 
 from mini_smolagents.agent import Agent
 from mini_smolagents.memory import Checkpoint, EpisodicMemory
 from mini_smolagents.tools import tool
+from mini_smolagents.types import ModelResponse, ToolCall
 
 
 @tool
@@ -23,23 +24,11 @@ class FakeModel:
     def generate(self, messages, tools=None):
         self.calls.append(messages)
         step = self.script[min(len(self.calls) - 1, len(self.script) - 1)]
-
-        def _tc(name, args, tid):
-            return SimpleNamespace(
-                id=tid,
-                type="function",
-                function=SimpleNamespace(name=name, arguments=args),
-            )
-
-        return SimpleNamespace(
-            choices=[SimpleNamespace(
-                message=SimpleNamespace(
-                    content=step.get("content", ""),
-                    tool_calls=[_tc(name, args, tid) for tid, name, args in step.get("tools", [])] or None,
-                )
-            )]
-        )
-
+        tool_calls = [
+            ToolCall(id=tid, name=name, arguments=json.loads(args))
+            for tid, name, args in step.get("tools", [])
+        ]
+        return ModelResponse(content=step.get("content", ""), tool_calls=tool_calls or None)
 
 def collect_stream(agent, task):
     return list(agent.run_stream(task))

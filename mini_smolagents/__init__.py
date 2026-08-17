@@ -1,5 +1,6 @@
 from .a2a import AgentCard, AgentRegistry, Artifact, Task
-from .agent import Agent, CodeAgent
+from .agent import Agent
+from .code_agent import CodeAgent
 from .default_tools import final_answer, python_interpreter, web_search
 from .llm import OpenAIModel
 from .memory import Checkpoint, EpisodicMemory

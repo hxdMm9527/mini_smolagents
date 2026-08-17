@@ -1,37 +1,19 @@
-import io
 import json
 import re
 import sys
-import time
 import uuid
-from types import SimpleNamespace
-from contextlib import redirect_stderr, redirect_stdout
 
 if sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
 
 from rich.console import Console
-from rich.live import Live
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.rule import Rule
-from rich.text import Text
 
-from ._exec import run_with_timeout
-from .default_tools import ALLOWED_BUILTINS, ALLOWED_IMPORTS, _safe_import, final_answer as _FINAL_ANSWER_TOOL
+from .console import print_event
+from .default_tools import final_answer as _FINAL_ANSWER_TOOL
 from .memory import should_store
-from .types import Tool
+from .prompts import SYSTEM_PROMPT
+from .types import ModelResponse, Tool
 
-SYSTEM_PROMPT = """\
-你是一个善于逐步解决问题的助手。你可以使用工具调用来完成任务。
-每一轮，先判断你是否能直接回答用户的问题：
-- 能回答：立即调用 `final_answer` 工具返回完整答案。你的最终答案只能通过 `final_answer` 输出，不要直接输出答案文本。
-- 不能回答：说明还缺什么信息，调用合适的工具获取，然后再判断。
-不要在相同的参数下重复调用同一个工具。
-如果你使用了 `create_sub_agent`，你仍然是最终答案的负责人。
-不要把用户任务原封不动转发给子助手——你必须亲自分析、拆解后再委托。
-子助手的返回结果不能直接作为 final_answer，你需要亲自综合或验证。\
-"""
 
 
 class Agent:
@@ -214,7 +196,7 @@ class Agent:
         ]
         try:
             resp = self.model.generate(summary_msgs)
-            return resp.choices[0].message.content
+            return resp.content or ""
         except Exception:
             return "\n".join(parts[:3]) + "\n\n(超时，以上为部分结果)"
 
@@ -335,66 +317,33 @@ class Agent:
                 pass
 
     def _generate_stream(self, messages, tools_schema, delegation_id=None):
-        """流式调用 LLM。yield token 事件，最终返回组装好的 message。
+        """流式调用 LLM。yield token 事件，最终返回 ModelResponse。
 
         - 有 generate_stream 时：逐 token yield {"type":"token","content":...}
         - 无流式接口（测试 FakeModel）时：一次性 yield 完整 thought
         """
         if not hasattr(self.model, "generate_stream"):
-            response = self.model.generate(messages, tools_schema)
-            msg = response.choices[0].message
-            text = msg.content or ""
-            if text:
-                ev = self._event("thought", content=text)
+            resp = self.model.generate(messages, tools_schema)
+            if resp.content:
+                ev = self._event("thought", content=resp.content)
                 if delegation_id:
                     ev["delegation_id"] = delegation_id
                 yield ev
-            return msg
+            return resp
 
-        stream = self.model.generate_stream(messages, tools_schema)
         text = ""
-        tool_calls = {}
-        order = []
-
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            if delta is None:
-                continue
-            if delta.content:
-                text += delta.content
-                ev = self._event("token", content=delta.content)
+        tool_calls = None
+        for chunk in self.model.generate_stream(messages, tools_schema):
+            if chunk.content:
+                text += chunk.content
+                ev = self._event("token", content=chunk.content)
                 if delegation_id:
                     ev["delegation_id"] = delegation_id
                 yield ev
-            for tc in delta.tool_calls or []:
-                idx = tc.index
-                if idx not in tool_calls:
-                    tool_calls[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
-                    order.append(idx)
-                if tc.id:
-                    tool_calls[idx]["id"] = tc.id
-                if tc.function:
-                    if tc.function.name:
-                        tool_calls[idx]["function"]["name"] += tc.function.name
-                    if tc.function.arguments:
-                        tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+            if chunk.tool_calls:
+                tool_calls = chunk.tool_calls
 
-        tcs = None
-        if order:
-            tcs = [
-                SimpleNamespace(
-                    id=tool_calls[i]["id"],
-                    type="function",
-                    function=SimpleNamespace(
-                        name=tool_calls[i]["function"]["name"],
-                        arguments=tool_calls[i]["function"]["arguments"],
-                    ),
-                )
-                for i in order
-            ]
-        return SimpleNamespace(content=text or None, tool_calls=tcs)
+        return ModelResponse(content=text or None, tool_calls=tool_calls)
 
     def run_stream(self, task: str, delegation_id: str | None = None):
         """核心执行逻辑的 generator。只 yield 事件，不打印，并收集本轮事件到 _current_turn。"""
@@ -467,8 +416,8 @@ class Agent:
                     "id": tc.id,
                     "type": "function",
                     "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
+                        "name": tc.name,
+                        "arguments": json.dumps(tc.arguments, ensure_ascii=False),
                     },
                 }
                 for tc in msg.tool_calls
@@ -480,9 +429,8 @@ class Agent:
             })
 
             for tc in msg.tool_calls:
-                tool_name = tc.function.name
-                raw_args = tc.function.arguments
-                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                tool_name = tc.name
+                args = tc.arguments
 
                 if self._is_agent_call(tool_name):
                     did = str(uuid.uuid4())
@@ -543,166 +491,4 @@ class Agent:
         return result
 
     def _print_event(self, event: dict):
-        etype = event["type"]
-        who = event.get("agent", self.name)
-        did = f" (sub:{event['delegation_id'][:8]})" if event.get("delegation_id") else ""
-        if etype == "step":
-            self.console.print(Rule(f"[{who}] Step {event['step']}/{event['max_steps']}{did}", style="bold blue"))
-        elif etype == "thought":
-            text = event["content"]
-            if self.stream:
-                with Live("", console=self.console, refresh_per_second=60) as live:
-                    for i in range(1, len(text) + 1, 2):
-                        live.update(Markdown(text[:i]))
-                        time.sleep(0.01)
-                    live.update(Markdown(text))
-            else:
-                self.console.print(Markdown(text))
-        elif etype == "token":
-            # ponytail: 终端不做逐 token 打字机，直接忽略增量（run() 靠 done 取结果）
-            pass
-        elif etype == "action":
-            action_text = Text(f"[{who}] Action: {event['tool']}", style="bold yellow")
-            action_text.append(f"\nArgs: {_trunc(str(event['args']), 200)}", style="dim")
-            self.console.print(Panel(action_text, border_style="yellow"))
-        elif etype == "result":
-            self.console.print(Panel(Text(str(event["content"])[:500], style="green"), border_style="green", title=f"[{who}] Result"))
-        elif etype == "note":
-            self.console.print(Panel(Text(event["content"], style="orange3"), border_style="orange3"))
-        elif etype == "done":
-            self.console.print(Panel(Text(str(event["content"]), style="bold gold1"), border_style="gold1", title=f"[{who}] Done"))
-
-
-class _FinalAnswer(Exception):
-    def __init__(self, result):
-        self.result = result
-
-
-class _StopExec(BaseException):
-    pass
-
-
-CODE_SYSTEM_PROMPT = """\
-你是一个善于编写 Python 代码来解决问题的助手。
-每步写一段 Python 代码，用 <code> 和 </code> 包裹。
-
-你可以直接调用以下 Python 函数：
-{tools_description}
-
-允许导入的库：{imports}
-
-得到最终答案时，调用 final_answer(答案)。
-"""
-
-
-def _extract_code(text: str) -> str:
-    match = re.search(r'<code>(.*?)</code>', text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    match = re.search(r'```(?:python)?\n?(.*?)```', text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    return text.strip()
-
-
-def _trunc(text: str, max_len: int) -> str:
-    if len(text) <= max_len:
-        return text
-    return text[:max_len] + "..."
-
-
-class CodeAgent(Agent):
-    def __init__(self, model, tools, max_steps=8, max_messages=30, additional_imports=None, name=None, description=None, managed_agents=None):
-        super().__init__(model, tools, max_steps, max_messages, name=name, description=description, managed_agents=managed_agents)
-        self.authorized_imports = list(set(ALLOWED_IMPORTS) | set(additional_imports or []))
-
-    def _build_sandbox(self):
-        fa = {"value": None}
-
-        def _fa(value):
-            fa["value"] = str(value)
-            raise _StopExec()
-
-        g = {
-            "__builtins__": {**ALLOWED_BUILTINS, "__import__": _safe_import},
-        }
-        for t in self.tools.values():
-            g[t.name] = t.func
-        g["final_answer"] = _fa
-        return g, fa
-
-    def _run_code(self, code: str, sandbox: dict, fa: dict) -> tuple[str, str]:
-        result: dict = {"output": "", "error": "", "timed_out": False}
-
-        def _run():
-            f = io.StringIO()
-            try:
-                with redirect_stdout(f), redirect_stderr(f):
-                    exec(code, sandbox)
-                result["output"] = f.getvalue().strip() or "(no output)"
-            except _StopExec:
-                result["output"] = f.getvalue().strip() or "(no output)"
-            except Exception as e:
-                result["error"] = f"{type(e).__name__}: {e}"
-
-        result["timed_out"] = run_with_timeout(_run, 30)
-
-        if fa["value"] is not None:
-            return ("final_answer", fa["value"])
-
-        if result["timed_out"]:
-            return ("error", "Error: code execution timed out (30-second limit).")
-        if result["error"]:
-            return ("error", f"Error: {result['error']}")
-        return ("output", result["output"])
-
-    def run(self, task: str) -> str:
-        tool_descs = "\n".join(f"- {t.name}: {t.description}" for t in self.tools.values())
-        imports = ", ".join(self.authorized_imports)
-        sys_prompt = CODE_SYSTEM_PROMPT.format(tools_description=tool_descs, imports=imports)
-
-        messages = [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": task},
-        ]
-        sandbox, fa = self._build_sandbox()
-
-        for step in range(1, self.max_steps + 1):
-            self.console.print(Rule(f"[{self.name}] Step {step}/{self.max_steps}", style="bold blue"))
-
-            if self.stream:
-                response = self.model.generate(self._get_trimmed_messages(messages))
-                msg = response.choices[0].message
-                full_text = msg.content or ""
-                if full_text:
-                    with Live("", console=self.console, refresh_per_second=60) as live:
-                        for i in range(1, len(full_text) + 1, 2):
-                            live.update(Text(full_text[:i]))
-                            time.sleep(0.01)
-                        live.update(Text(full_text))
-            else:
-                response = self.model.generate(self._get_trimmed_messages(messages))
-                msg = response.choices[0].message
-                full_text = msg.content or ""
-                if full_text:
-                    self.console.print(Text(full_text[:500]))
-
-            code = _extract_code(full_text)
-            messages.append({"role": "assistant", "content": full_text})
-
-            status, value = self._run_code(code, sandbox, fa)
-            value_short = _trunc(value, 500)
-            if status == "error":
-                self.console.print(Panel(Text(value_short, style="red"), border_style="red", title=f"[{self.name}] Error"))
-            elif status == "final_answer":
-                self.console.print(Panel(Text(value_short, style="bold gold1"), border_style="gold1", title=f"[{self.name}] Code output"))
-            else:
-                self.console.print(Panel(Text(value_short, style="green"), border_style="green", title=f"[{self.name}] Code output"))
-            messages.append({"role": "user", "content": value})
-
-            if status == "final_answer":
-                self.console.print(Panel(Text(value, style="bold gold1"), border_style="gold1", title=f"[{self.name}] Done"))
-                return value
-
-        self.console.print(Panel(Text(f"[{self.name}] 达到最大步数，正在总结已有结果...", style="orange3"), border_style="orange3"))
-        return self._summarize_messages(self._last_messages)
+        print_event(self.console, event, self.name, self.stream)
