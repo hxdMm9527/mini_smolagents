@@ -9,6 +9,7 @@ from rich.rule import Rule
 from rich.text import Text
 
 from ._exec import run_with_timeout
+from .config import CODE_EXEC_TIMEOUT, CODE_MAX_STEPS, DEFAULT_MAX_MESSAGES, TRUNC_MEDIUM
 from .agent import Agent
 from .console import _trunc
 from .default_tools import ALLOWED_BUILTINS, ALLOWED_IMPORTS, _safe_import
@@ -30,7 +31,7 @@ def _extract_code(text: str) -> str:
 
 
 class CodeAgent(Agent):
-    def __init__(self, model, tools, max_steps=8, max_messages=30, additional_imports=None, name=None, description=None, managed_agents=None):
+    def __init__(self, model, tools, max_steps=CODE_MAX_STEPS, max_messages=DEFAULT_MAX_MESSAGES, additional_imports=None, name=None, description=None, managed_agents=None):
         super().__init__(model, tools, max_steps, max_messages, name=name, description=description, managed_agents=managed_agents)
         self.authorized_imports = list(set(ALLOWED_IMPORTS) | set(additional_imports or []))
 
@@ -63,7 +64,7 @@ class CodeAgent(Agent):
             except Exception as e:
                 result["error"] = f"{type(e).__name__}: {e}"
 
-        result["timed_out"] = run_with_timeout(_run, 30)
+        result["timed_out"] = run_with_timeout(_run, CODE_EXEC_TIMEOUT)
 
         if fa["value"] is not None:
             return ("final_answer", fa["value"])
@@ -101,7 +102,7 @@ class CodeAgent(Agent):
                 resp = self.model.generate(self._get_trimmed_messages(messages))
                 full_text = resp.content or ""
                 if full_text:
-                    self.console.print(Text(full_text[:500]))
+                    self.console.print(Text(full_text[:TRUNC_MEDIUM]))
 
             code = _extract_code(full_text)
             messages.append({"role": "assistant", "content": full_text})

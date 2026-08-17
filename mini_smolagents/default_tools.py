@@ -2,6 +2,7 @@ import io
 from contextlib import redirect_stderr, redirect_stdout
 
 from ._exec import run_with_timeout
+from .config import PYTHON_INTERPRETER_TIMEOUT, WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_TIMEOUT
 from .tools import tool
 
 ALLOWED_IMPORTS = ["math", "json", "re", "datetime", "random", "collections"]
@@ -42,7 +43,7 @@ def web_search(query: str) -> str:
     def _do_search():
         try:
             with DDGS() as ddgs:
-                items = list(ddgs.text(query, max_results=10))
+                items = list(ddgs.text(query, max_results=WEB_SEARCH_MAX_RESULTS))
 
             if not items:
                 result["output"] = "No results found."
@@ -55,7 +56,7 @@ def web_search(query: str) -> str:
         except Exception as e:
             result["error"] = f"{type(e).__name__}: {e}"
 
-    result["timed_out"] = run_with_timeout(_do_search, 15)
+    result["timed_out"] = run_with_timeout(_do_search, WEB_SEARCH_TIMEOUT)
 
     if result["timed_out"]:
         return "Error: web search timed out (15-second limit)."
@@ -89,7 +90,7 @@ def python_interpreter(code: str) -> str:
         except Exception as e:
             result["error"] = f"{type(e).__name__}: {e}"
 
-    result["timed_out"] = run_with_timeout(_run, 10)
+    result["timed_out"] = run_with_timeout(_run, PYTHON_INTERPRETER_TIMEOUT)
 
     if result["timed_out"]:
         return "Error: code execution timed out (10-second limit)."

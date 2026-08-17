@@ -75,7 +75,7 @@ def test_memory_injection_and_store(tmpdir):
     assert mem.count() == 2
     found = mem.search("新任务", top_k=1)
     assert len(found) == 1
-    assert "新任务" in found[0]["document"]
+    assert "新任务" in found[0].document
 
 
 def test_memory_injection_into_system_prompt(tmpdir):

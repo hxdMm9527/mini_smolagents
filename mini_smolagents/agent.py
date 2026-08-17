@@ -1,4 +1,6 @@
+from dataclasses import asdict
 import json
+import logging
 import re
 import sys
 import uuid
@@ -9,16 +11,19 @@ if sys.stdout.encoding.lower() != "utf-8":
 from rich.console import Console
 
 from .a2a import AgentRegistry
+from .config import DEFAULT_MAX_MESSAGES, DEFAULT_MAX_STEPS, MEMORY_TOP_K, SUB_AGENT_MAX_STEPS, TOOL_RETRY_ATTEMPTS, TRUNC_LONG, TRUNC_MEDIUM, TRUNC_SHORT
 from .console import print_event
 from .default_tools import final_answer as _FINAL_ANSWER_TOOL
-from .memory import should_store
+from .memory import MemoryHit, StorePolicy
 from .prompts import SYSTEM_PROMPT
 from .types import ModelResponse, Tool
+
+logger = logging.getLogger(__name__)
 
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=5, max_messages=30, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None):
+    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, max_messages=DEFAULT_MAX_MESSAGES, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None):
         self.model = model
         self.max_steps = max_steps
         self.max_messages = max_messages
@@ -31,6 +36,7 @@ class Agent:
         self.checkpoint = checkpoint
         self.session_id = session_id
         self.registry = registry
+        self.store_policy = store_policy or StorePolicy()
         self.tools = {}
         self._sub_results: dict[str, str] = {}
         self._delegation_count = 0
@@ -178,9 +184,9 @@ class Agent:
         parts = []
         for msg in messages:
             if msg["role"] == "tool" and msg.get("content"):
-                parts.append(f"工具返回: {msg['content'][:800]}")
+                parts.append(f"工具返回: {msg['content'][:TRUNC_LONG]}")
             elif msg["role"] == "assistant" and msg.get("content"):
-                parts.append(f"分析: {msg['content'][:500]}")
+                parts.append(f"分析: {msg['content'][:TRUNC_MEDIUM]}")
 
         if not parts:
             return "(任务未完成，无有效信息)"
@@ -196,22 +202,24 @@ class Agent:
         try:
             resp = self.model.generate(summary_msgs)
             return resp.content or ""
-        except Exception:
+        except Exception as e:
+            logger.debug("LLM 摘要失败: %s", e)
             return "\n".join(parts[:3]) + "\n\n(超时，以上为部分结果)"
 
-    def _retrieve_memory(self, task: str) -> list[dict]:
+    def _retrieve_memory(self, task: str) -> list[MemoryHit]:
         if not self.memory:
             return []
         try:
-            return self.memory.search(task, top_k=3)
-        except Exception:
+            return self.memory.search(task, top_k=MEMORY_TOP_K)
+        except Exception as e:
+            logger.debug("记忆检索失败: %s", e)
             return []
 
     def _inject_memory(self, task: str) -> str:
         history = self._retrieve_memory(task)
         if not history:
             return self.system_prompt
-        mem_lines = "\n".join(f"- {h['task']} → {h['document'][:200]}" for h in history)
+        mem_lines = "\n".join(f"- {h.task} → {h.document[:TRUNC_SHORT]}" for h in history)
         return f"{self.system_prompt}\n\n[相关历史记忆，供参考：]\n{mem_lines}"
 
     def _event(self, type_: str, **kw) -> dict:
@@ -289,7 +297,7 @@ class Agent:
                 model=self.model,
                 tools=sub_tools,
                 name=name,
-                max_steps=min(5, self.max_steps),
+                max_steps=min(SUB_AGENT_MAX_STEPS, self.max_steps),
                 max_messages=self.max_messages,
                 allow_delegation=False,
                 registry=registry,
@@ -312,8 +320,8 @@ class Agent:
                     messages if messages is not None else self._last_messages,
                     turns=turns,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("检查点保存失败: %s", e)
 
     def _generate_stream(self, messages, tools_schema, delegation_id=None):
         """流式调用 LLM。yield token 事件，最终返回 ModelResponse。
@@ -370,7 +378,7 @@ class Agent:
         self._original_task = task
         history = self._retrieve_memory(task)
         if history:
-            yield self._event("memory", hits=history)
+            yield self._event("memory", hits=[asdict(h) for h in history])
 
         saved = None
         if self.checkpoint and self.session_id:
@@ -450,7 +458,7 @@ class Agent:
                 yield self._event("action", tool=tool_name, args=args)
 
                 result = None
-                for attempt in range(1, 4):
+                for attempt in range(1, TOOL_RETRY_ATTEMPTS + 1):
                     try:
                         result = self._execute_tool(tool_name, args)
                         break
@@ -469,7 +477,7 @@ class Agent:
                 if tool_name == "final_answer":
                     final = str(result)
                     stored = False
-                    if self.memory and should_store(task, final):
+                    if self.memory and self.store_policy.should_store(task, final):
                         self.memory.add(task, final)
                         stored = True
                     yield self._event("done", content=final, stored=stored, session_id=self.session_id)

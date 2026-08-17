@@ -7,6 +7,8 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.text import Text
 
+from .config import TRUNC_MEDIUM, TRUNC_SHORT
+
 
 def _trunc(text: str, max_len: int) -> str:
     if len(text) <= max_len:
@@ -34,10 +36,10 @@ def print_event(console: Console, event: dict, name: str, stream: bool) -> None:
         pass
     elif etype == "action":
         action_text = Text(f"[{who}] Action: {event['tool']}", style="bold yellow")
-        action_text.append(f"\nArgs: {_trunc(str(event['args']), 200)}", style="dim")
+        action_text.append(f"\nArgs: {_trunc(str(event['args']), TRUNC_SHORT)}", style="dim")
         console.print(Panel(action_text, border_style="yellow"))
     elif etype == "result":
-        console.print(Panel(Text(str(event["content"])[:500], style="green"), border_style="green", title=f"[{who}] Result"))
+        console.print(Panel(Text(str(event["content"])[:TRUNC_MEDIUM], style="green"), border_style="green", title=f"[{who}] Result"))
     elif etype == "note":
         console.print(Panel(Text(event["content"], style="orange3"), border_style="orange3"))
     elif etype == "done":

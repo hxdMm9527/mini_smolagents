@@ -27,7 +27,7 @@ def test_episodic_memory_add_and_search(tmpdir):
 
     results = mem.search("正则验证邮箱", top_k=1)
     assert len(results) == 1
-    assert "邮箱" in results[0]["document"]
+    assert "邮箱" in results[0].document
 
     results_all = mem.search("函数", top_k=3)
     assert len(results_all) == 2
@@ -78,7 +78,7 @@ def test_integration(tmpdir):
     mem.add(task, result)
     found = mem.search("排序算法", top_k=1)
     assert len(found) == 1
-    assert "quicksort" in found[0]["document"]
+    assert "quicksort" in found[0].document
 
     messages = [
         {"role": "system", "content": "test agent"},
@@ -90,6 +90,35 @@ def test_integration(tmpdir):
     assert loaded == messages
 
     print("All tests passed!")
+
+
+def test_store_policy():
+    from mini_smolagents.memory import StorePolicy
+    p = StorePolicy()
+    assert p.should_store("写函数", "def validate_email(): ... 完整代码") is True
+    assert p.should_store("写函数", "太短") is False
+    assert p.should_store("写函数", "Error: 执行超时 timed out") is False
+
+
+def test_memory_hit_type(tmpdir):
+    from mini_smolagents.memory import MemoryHit
+    mem = EpisodicMemory(collection_name="test_hit", persist_dir=str(tmpdir))
+    mem.add("写一个邮箱验证函数", "返回 validate_email() 代码")
+    hits = mem.search("邮箱", top_k=1)
+    assert len(hits) == 1
+    assert isinstance(hits[0], MemoryHit)
+    assert hits[0].score > 0
+
+
+def test_checkpoint_rejects_invalid_session_id(tmpdir):
+    cp = Checkpoint(base_dir=str(tmpdir))
+    bad_ids = ["a/b", "a" + chr(92) + "b", "..", "a..b", "../x"]
+    for bad in bad_ids:
+        try:
+            cp.save(bad, [{"role": "user", "content": "x"}])
+            assert False, "应拒绝非法 session_id: " + bad
+        except ValueError:
+            pass
 
 
 if __name__ == "__main__":

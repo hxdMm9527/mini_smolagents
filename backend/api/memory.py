@@ -16,4 +16,4 @@ class SearchRequest(BaseModel):
 @router.post("/search")
 async def search_memory(req: SearchRequest):
     hits = MEMORY.search(req.query, top_k=req.top_k)
-    return {"hits": hits}
+    return {"hits": [{"task": h.task, "document": h.document, "score": h.score} for h in hits]}
