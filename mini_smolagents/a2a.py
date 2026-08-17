@@ -31,11 +31,17 @@ class Artifact:
 
 
 class AgentRegistry:
-    """注册 / 查找 / 委托 Agent。"""
+    """注册 / 查找 / 委托 Agent。
 
-    def __init__(self):
+    delegate_fn: 可选执行回调 (agent, description) -> str。
+    未注入时默认调用 agent.run(description)；注入后由调用方决定执行方式（同步或流式），
+    使 registry 与 Agent 的具体执行方式解耦。
+    """
+
+    def __init__(self, delegate_fn=None):
         self._agents: dict[str, object] = {}
         self._cards: dict[str, AgentCard] = {}
+        self._delegate_fn = delegate_fn
 
     def register(self, agent, capabilities: list[str] | None = None) -> AgentCard:
         card = AgentCard(
@@ -61,21 +67,29 @@ class AgentRegistry:
         return list(self._cards.values())
 
     def delegate(self, task: Task) -> Artifact:
-        """查找目标 Agent → 执行 → 返回 Artifact。"""
-        agent = self._agents.get(task.target_agent)
+        return self._invoke(task.target_agent, task.description, task.task_id)
+
+    def delegate_to(self, target: str, description: str) -> Artifact:
+        return self._invoke(target, description, "")
+
+    def _invoke(self, target: str, description: str, task_id: str) -> Artifact:
+        agent = self._agents.get(target)
         if agent is None:
             return Artifact(
-                task_id=task.task_id,
+                task_id=task_id,
                 status="fail",
                 content="",
-                error=f"Agent '{task.target_agent}' not registered",
+                error=f"Agent '{target}' not registered",
             )
         try:
-            result = agent.run(task.description)
-            return Artifact(task_id=task.task_id, status="success", content=result)
+            if self._delegate_fn is not None:
+                result = self._delegate_fn(agent, description)
+            else:
+                result = agent.run(description)
+            return Artifact(task_id=task_id, status="success", content=result)
         except Exception as e:
             return Artifact(
-                task_id=task.task_id,
+                task_id=task_id,
                 status="fail",
                 content="",
                 error=f"{type(e).__name__}: {e}",

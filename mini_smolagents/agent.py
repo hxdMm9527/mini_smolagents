@@ -8,6 +8,7 @@ if sys.stdout.encoding.lower() != "utf-8":
 
 from rich.console import Console
 
+from .a2a import AgentRegistry
 from .console import print_event
 from .default_tools import final_answer as _FINAL_ANSWER_TOOL
 from .memory import should_store
@@ -56,13 +57,11 @@ class Agent:
 
     def _ensure_registry(self):
         if self.registry is None:
-            from .a2a import AgentRegistry
             self.registry = AgentRegistry()
         return self.registry
 
     def _delegate(self, target: str, task: str) -> str:
-        from .a2a import Task
-        artifact = self._ensure_registry().delegate(Task(description=task, target_agent=target))
+        artifact = self._ensure_registry().delegate_to(target, task)
         if artifact.status == "success":
             return artifact.content
         return f"子助手执行失败: {artifact.error}"
