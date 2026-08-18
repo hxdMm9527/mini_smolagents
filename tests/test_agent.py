@@ -555,3 +555,75 @@ def test_retrieve_facts_failure_degrades():
     facts_mem.search.side_effect = RuntimeError("db down")
     agent = Agent(model=model, tools=[dummy], facts_memory=facts_mem)
     assert agent._retrieve_facts("task") == ""
+
+def test_auto_extract_facts_writes():
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="c1", name="final_answer", arguments={"answer": "完成"})]),
+        ModelResponse(content="- 用户喜欢 Python\n- 用户在杭州工作\n"),
+    ])
+    facts_mem = MagicMock()
+    facts_mem.search.return_value = []
+    facts_mem.add.return_value = True
+    agent = Agent(model=model, tools=[dummy], facts_memory=facts_mem, auto_extract_facts=True)
+    result = agent.run("帮我写个脚本，我喜欢 Python")
+    assert result == "完成"
+    assert facts_mem.add.call_count == 2
+
+
+def test_auto_extract_facts_disabled_by_default():
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="c1", name="final_answer", arguments={"answer": "完成"})]),
+    ])
+    facts_mem = MagicMock()
+    agent = Agent(model=model, tools=[dummy], facts_memory=facts_mem)
+    agent.run("task")
+    assert len(model.calls) == 1
+    assert facts_mem.add.call_count == 0
+
+
+def test_auto_extract_facts_no_facts():
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="c1", name="final_answer", arguments={"answer": "完成"})]),
+        ModelResponse(content="无"),
+    ])
+    facts_mem = MagicMock()
+    facts_mem.search.return_value = []
+    facts_mem.add.return_value = True
+    agent = Agent(model=model, tools=[dummy], facts_memory=facts_mem, auto_extract_facts=True)
+    agent.run("task")
+    assert facts_mem.add.call_count == 0
+
+
+def test_auto_extract_facts_failure_degrades():
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    class FailingExtractModel:
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, messages, tools=None):
+            self.calls += 1
+            if self.calls == 1:
+                return ModelResponse(tool_calls=[ToolCall(id="c1", name="final_answer", arguments={"answer": "完成"})])
+            raise RuntimeError("extract down")
+
+    model = FailingExtractModel()
+    facts_mem = MagicMock()
+    agent = Agent(model=model, tools=[dummy], facts_memory=facts_mem, auto_extract_facts=True)
+    result = agent.run("task")
+    assert result == "完成"
+    assert facts_mem.add.call_count == 0

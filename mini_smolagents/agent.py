@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None, profile_dir=None, facts_memory=None):
+    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None, profile_dir=None, facts_memory=None, auto_extract_facts=False):
         self.model = model
         self.max_steps = max_steps
         self.window_size = window_size
@@ -46,6 +46,7 @@ class Agent:
         self.profile_dir = profile_dir
         self._profile = None
         self.facts_memory = facts_memory
+        self.auto_extract_facts = auto_extract_facts
         self.tools = {}
         self._sub_results: dict[str, str] = {}
         self._delegation_count = 0
@@ -220,6 +221,52 @@ class Agent:
         if not facts:
             return ""
         return "\n".join(f"- {f}" for f in facts)
+
+    def _extract_facts_from_conversation(self, messages):
+        conversation = "\n".join(
+            f"{m['role']}: {m.get('content', '')[:TRUNC_SHORT]}"
+            for m in messages
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        )
+        if not conversation.strip():
+            return []
+        prompt = (
+            "从以下对话中提取关于用户本人的长期事实（如职业、技能、偏好、背景、约束等）。"
+            "只提取明确陈述的事实，不要推测，不要提取任务内容本身。"
+            "每条事实一行，用简洁中文。如果没有值得长期记住的用户事实，只输出「无」。\n\n"
+            + conversation
+        )
+        extract_msgs = [
+            {"role": "system", "content": "你是善于从对话中提取用户档案信息的助手。"},
+            {"role": "user", "content": prompt},
+        ]
+        resp = self.model.generate(extract_msgs)
+        lines = [
+            ln.strip().lstrip("-* ").strip()
+            for ln in (resp.content or "").splitlines()
+            if ln.strip()
+        ]
+        facts = []
+        for ln in lines:
+            if ln in ("无", "无。", "没有", "没有。", "暂无", "暂无。"):
+                continue
+            if 2 <= len(ln) <= TRUNC_MEDIUM:
+                facts.append(ln)
+        return facts
+
+    def _auto_extract_facts(self, task, messages):
+        if not self.auto_extract_facts or not self.facts_memory:
+            return
+        try:
+            facts = self._extract_facts_from_conversation(messages)
+        except Exception as e:
+            logger.debug("facts 自动提炼失败: %s", e)
+            return
+        for f in facts:
+            try:
+                self.facts_memory.add(f)
+            except Exception as e:
+                logger.debug("fact 写入失败: %s", e)
 
     def _build_tools_schema(self):
         schema = []
@@ -637,6 +684,7 @@ class Agent:
                         stored = True
                     yield self._event("done", content=final, stored=stored, session_id=self.session_id)
                     self._commit_profile()
+                    self._auto_extract_facts(task, messages)
                     self._save_checkpoint(messages)
                     return
 
