@@ -31,8 +31,8 @@ def _extract_code(text: str) -> str:
 
 
 class CodeAgent(Agent):
-    def __init__(self, model, tools, max_steps=CODE_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, additional_imports=None, name=None, description=None, managed_agents=None):
-        super().__init__(model, tools, max_steps, window_size, name=name, description=description, managed_agents=managed_agents)
+    def __init__(self, model, tools, max_steps=CODE_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, additional_imports=None, name=None, description=None, managed_agents=None, memory=None, checkpoint=None, session_id=None):
+        super().__init__(model, tools, max_steps, window_size, name=name, description=description, managed_agents=managed_agents, memory=memory, checkpoint=checkpoint, session_id=session_id)
         self.authorized_imports = list(set(ALLOWED_IMPORTS) | set(additional_imports or []))
 
     def _build_sandbox(self):
@@ -80,10 +80,28 @@ class CodeAgent(Agent):
         imports = ", ".join(self.authorized_imports)
         sys_prompt = CODE_SYSTEM_PROMPT.format(tools_description=tool_descs, imports=imports)
 
-        messages = [
-            {"role": "system", "content": sys_prompt},
-            {"role": "user", "content": task},
-        ]
+        recall = self._recall_text(task)
+        if recall:
+            sys_prompt += f"\n\n[相关历史记忆，供参考：]\n{recall}"
+
+        messages = None
+        if self.checkpoint and self.session_id:
+            saved = self.checkpoint.load(self.session_id)
+            if saved:
+                messages = list(saved)
+                if messages and messages[0].get("role") == "system":
+                    messages[0] = {"role": "system", "content": sys_prompt}
+                else:
+                    messages.insert(0, {"role": "system", "content": sys_prompt})
+                messages = messages + [{"role": "user", "content": task}]
+
+        if messages is None:
+            messages = [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": task},
+            ]
+        self._last_messages = messages
+
         sandbox, fa = self._build_sandbox()
 
         for step in range(1, self.max_steps + 1):
@@ -119,7 +137,11 @@ class CodeAgent(Agent):
 
             if status == "final_answer":
                 self.console.print(Panel(Text(value, style="bold gold1"), border_style="gold1", title=f"[{self.name}] Done"))
+                if self.memory and self.store_policy.should_store(task, value):
+                    self.memory.add(task, value)
+                self._save_checkpoint(messages)
                 return value
 
         self.console.print(Panel(Text(f"[{self.name}] 达到最大步数，正在总结已有结果...", style="orange3"), border_style="orange3"))
-        return self._summarize_messages(self._last_messages)
+        self._save_checkpoint(messages)
+        return self._summarize_messages(messages)

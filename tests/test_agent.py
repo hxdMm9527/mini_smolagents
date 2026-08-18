@@ -13,7 +13,7 @@ class FakeModel:
         self.calls = []
 
     def generate(self, messages, tools=None):
-        self.calls.append(messages)
+        self.calls.append(list(messages))
         if not self.responses:
             raise AssertionError("FakeModel: 没有更多预设响应")
         return self.responses.pop(0)
@@ -643,3 +643,76 @@ def test_auto_extract_facts_negative_variant_not_written():
     agent = Agent(model=model, tools=[dummy], facts_memory=facts_mem, auto_extract_facts=True)
     agent.run("task")
     assert facts_mem.add.call_count == 0
+
+def test_codeagent_memory_recall_injected():
+    from mini_smolagents import CodeAgent
+    from mini_smolagents.memory import MemoryHit
+
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    code = "<code>\nfinal_answer('42')\n</code>"
+    model = FakeModel([ModelResponse(content=code)])
+    memory = MagicMock()
+    memory.search.return_value = [MemoryHit(task="旧任务", document="旧结果", score=0.9)]
+    agent = CodeAgent(model=model, tools=[dummy], memory=memory)
+    agent.run("新任务")
+    system_content = model.calls[0][0]["content"]
+    assert "旧任务" in system_content
+
+
+def test_codeagent_memory_store():
+    from mini_smolagents import CodeAgent
+
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    code = "<code>\nfinal_answer('def solve(): return 42')\n</code>"
+    model = FakeModel([ModelResponse(content=code)])
+    memory = MagicMock()
+    memory.search.return_value = []
+    agent = CodeAgent(model=model, tools=[dummy], memory=memory)
+    agent.run("写个函数")
+    memory.add.assert_called_once()
+
+
+def test_codeagent_max_steps_no_error_and_no_store():
+    from mini_smolagents import CodeAgent
+
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = FakeModel([ModelResponse(content="<code>\nprint(1)\n</code>")] * 3)
+    memory = MagicMock()
+    memory.search.return_value = []
+    agent = CodeAgent(model=model, tools=[dummy], max_steps=3, memory=memory)
+    agent._summarize_messages = MagicMock(return_value="总结")
+    result = agent.run("test")
+    assert result == "总结"
+    memory.add.assert_not_called()
+
+
+def test_codeagent_checkpoint_resume(tmp_path):
+    from mini_smolagents import CodeAgent
+    from mini_smolagents.memory import Checkpoint
+
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    code = "<code>\nfinal_answer('42')\n</code>"
+    cp = Checkpoint(base_dir=str(tmp_path))
+
+    agent = CodeAgent(model=FakeModel([ModelResponse(content=code)]), tools=[dummy], checkpoint=cp, session_id="s1")
+    agent.run("任务")
+    assert cp.load("s1") is not None
+
+    model2 = FakeModel([ModelResponse(content=code)])
+    agent2 = CodeAgent(model=model2, tools=[dummy], checkpoint=cp, session_id="s1")
+    agent2.run("续聊")
+    first_call = model2.calls[0]
+    assert first_call[0]["role"] == "system"
+    assert first_call[-1]["content"] == "续聊"
