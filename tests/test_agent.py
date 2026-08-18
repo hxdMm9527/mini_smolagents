@@ -563,7 +563,7 @@ def test_auto_extract_facts_writes():
 
     model = FakeModel([
         ModelResponse(tool_calls=[ToolCall(id="c1", name="final_answer", arguments={"answer": "完成"})]),
-        ModelResponse(content="- 用户喜欢 Python\n- 用户在杭州工作\n"),
+        ModelResponse(content='["用户喜欢 Python", "用户在杭州工作"]'),
     ])
     facts_mem = MagicMock()
     facts_mem.search.return_value = []
@@ -596,7 +596,7 @@ def test_auto_extract_facts_no_facts():
 
     model = FakeModel([
         ModelResponse(tool_calls=[ToolCall(id="c1", name="final_answer", arguments={"answer": "完成"})]),
-        ModelResponse(content="无"),
+        ModelResponse(content="[]"),
     ])
     facts_mem = MagicMock()
     facts_mem.search.return_value = []
@@ -626,4 +626,20 @@ def test_auto_extract_facts_failure_degrades():
     agent = Agent(model=model, tools=[dummy], facts_memory=facts_mem, auto_extract_facts=True)
     result = agent.run("task")
     assert result == "完成"
+    assert facts_mem.add.call_count == 0
+
+def test_auto_extract_facts_negative_variant_not_written():
+    @tool
+    def dummy() -> str:
+        return "ok"
+
+    model = FakeModel([
+        ModelResponse(tool_calls=[ToolCall(id="c1", name="final_answer", arguments={"answer": "完成"})]),
+        ModelResponse(content="没有值得记住的用户事实。"),
+    ])
+    facts_mem = MagicMock()
+    facts_mem.search.return_value = []
+    facts_mem.add.return_value = True
+    agent = Agent(model=model, tools=[dummy], facts_memory=facts_mem, auto_extract_facts=True)
+    agent.run("task")
     assert facts_mem.add.call_count == 0

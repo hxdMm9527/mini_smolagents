@@ -233,25 +233,30 @@ class Agent:
         prompt = (
             "从以下对话中提取关于用户本人的长期事实（如职业、技能、偏好、背景、约束等）。"
             "只提取明确陈述的事实，不要推测，不要提取任务内容本身。"
-            "每条事实一行，用简洁中文。如果没有值得长期记住的用户事实，只输出「无」。\n\n"
-            + conversation
+            "只返回一个 JSON 数组，每个元素是一条简洁事实字符串；没有值得记住的事实则返回空数组 []。"
+            "不要返回 JSON 之外的任何内容。\n\n" + conversation
         )
         extract_msgs = [
             {"role": "system", "content": "你是善于从对话中提取用户档案信息的助手。"},
             {"role": "user", "content": prompt},
         ]
         resp = self.model.generate(extract_msgs)
-        lines = [
-            ln.strip().lstrip("-* ").strip()
-            for ln in (resp.content or "").splitlines()
-            if ln.strip()
-        ]
+        match = re.search(r"\[.*\]", resp.content or "", re.DOTALL)
+        if not match:
+            return []
+        try:
+            parsed = json.loads(match.group(0))
+        except Exception as e:
+            logger.debug("facts 提炼结果解析失败: %s", e)
+            return []
+        if not isinstance(parsed, list):
+            return []
         facts = []
-        for ln in lines:
-            if ln in ("无", "无。", "没有", "没有。", "暂无", "暂无。"):
-                continue
-            if 2 <= len(ln) <= TRUNC_MEDIUM:
-                facts.append(ln)
+        for item in parsed:
+            if isinstance(item, str):
+                f = item.strip()
+                if 2 <= len(f) <= TRUNC_MEDIUM:
+                    facts.append(f)
         return facts
 
     def _auto_extract_facts(self, task, messages):
