@@ -223,6 +223,7 @@ mini_smolagents/
 
 ```
 chromadb>=0.4      # RAG 向量记忆
+sentence-transformers>=2.2  # 中文语义 embedding（bge-small-zh-v1.5）
 fastapi>=0.100     # 后端 Web 框架
 uvicorn>=0.23      # ASGI 服务器
 sse-starlette      # SSE 支持

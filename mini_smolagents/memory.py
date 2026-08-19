@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import uuid
 from dataclasses import dataclass
@@ -7,7 +8,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from .config import TRUNC_MEDIUM
+from ._chroma import get_client
+from .config import MEMORY_DEDUP_THRESHOLD, MEMORY_HALF_LIFE_DAYS, MEMORY_MATCH_THRESHOLD, TRUNC_MEDIUM
+from .embedding import get_embedding_function
 
 logger = logging.getLogger(__name__)
 
@@ -16,16 +19,21 @@ _FAILURE_MARKERS = ("error", "timed out", "traceback", "失败", "异常")
 
 @dataclass
 class MemoryHit:
-    """记忆检索命中。score 越大越相关。"""
+    """记忆检索命中。score 为有效分（相似度 × 时效衰减），越大越相关。"""
     task: str
     document: str
     score: float
+    id: str | None = None
+    count: int = 1
+    timestamp: str = ""
 
 
 class Memory(Protocol):
-    """记忆后端协议：add / search / clear / count。"""
-    def add(self, task: str, result: str) -> None: ...
+    """记忆后端协议：add / search / delete / update / clear / count。"""
+    def add(self, task: str, result: str) -> bool: ...
     def search(self, query: str, top_k: int = 3) -> list[MemoryHit]: ...
+    def delete(self, query: str) -> int: ...
+    def update(self, query: str, new_doc: str) -> bool: ...
     def clear(self) -> None: ...
     def count(self) -> int: ...
 
@@ -61,35 +69,142 @@ class EpisodicMemory:
             raise ImportError(
                 "EpisodicMemory 需要 chromadb，请先安装：pip install chromadb"
             ) from e
-        self.client = chromadb.PersistentClient(path=persist_dir)
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name, embedding_function=embedding_fn
-        )
+        self.client = get_client(persist_dir)
+        self.embedding_fn = embedding_fn if embedding_fn is not None else get_embedding_function()
+        self.collection = self._ensure_collection(collection_name)
+        self.dedup_threshold = MEMORY_DEDUP_THRESHOLD
+        self.half_life_days = MEMORY_HALF_LIFE_DAYS
 
-    def add(self, task: str, result: str):
-        doc_id = str(uuid.uuid4())
+    def _ensure_collection(self, name: str):
+        """探测既有 collection 维度，与当前 embedding 不符（含空库）则重建。"""
+        fn = self.embedding_fn
+        if fn is None:
+            try:
+                existing = self.client.get_collection(name)
+            except Exception:
+                existing = None
+            if existing is not None and (existing.metadata or {}).get("embedding_dim"):
+                logger.warning("记忆库 %s 由中文 embedding 构建但模型不可用，降级重建为内置 embedding", name)
+                try:
+                    self.client.delete_collection(name)
+                except Exception:
+                    pass
+            return self.client.get_or_create_collection(name, embedding_function=None)
+        dim = fn.dim
+        try:
+            existing = self.client.get_collection(name)
+        except Exception:
+            existing = None
+        if existing is not None:
+            same_space = (existing.metadata or {}).get("embedding_dim") == dim
+            if not same_space:
+                try:
+                    sample = existing.get(limit=1, include=["embeddings"])
+                    emb = (sample.get("embeddings") or [None])[0]
+                except Exception:
+                    emb = None
+                if emb is None:
+                    logger.info("记忆库 %s 为空，重建以使用中文 embedding (dim=%d)", name, dim)
+                else:
+                    logger.warning(
+                        "记忆库 %s 向量维度 %d 与当前 embedding %d 不符，已重建（旧向量空间不兼容）",
+                        name, len(emb), dim,
+                    )
+                try:
+                    self.client.delete_collection(name)
+                except Exception:
+                    pass
+            else:
+                return existing
+        return self.client.create_collection(name, embedding_function=fn, metadata={"embedding_dim": dim})
+
+    def add(self, task: str, result: str) -> bool:
         document = f"Task: {task}\n\nResult: {result}"
+        existing = self.collection.query(query_texts=[document], n_results=1)
+        docs = existing.get("documents")
+        if docs and docs[0]:
+            distance = existing["distances"][0][0] if existing.get("distances") else 0.0
+            score = 1.0 / (1.0 + distance)
+            if score > self.dedup_threshold:
+                hit_id = (existing.get("ids") or [[]])[0][0]
+                meta = (existing.get("metadatas") or [[{}]])[0][0]
+                new_meta = {
+                    **meta,
+                    "count": int(meta.get("count", 1)) + 1,
+                    "last_seen": datetime.now().isoformat(),
+                }
+                self.collection.update(ids=[hit_id], metadatas=[new_meta])
+                return False
+        doc_id = str(uuid.uuid4())
         self.collection.add(
             documents=[document],
-            metadatas=[{"task": task[:TRUNC_MEDIUM], "timestamp": datetime.now().isoformat()}],
+            metadatas=[{
+                "task": task[:TRUNC_MEDIUM],
+                "timestamp": datetime.now().isoformat(),
+                "count": 1,
+            }],
             ids=[doc_id],
         )
+        return True
+
+    def _locate(self, query: str):
+        existing = self.collection.query(query_texts=[query], n_results=1)
+        ids = existing.get("ids")
+        if not ids or not ids[0]:
+            return None
+        distance = (existing.get("distances") or [[0.0]])[0][0]
+        if 1.0 / (1.0 + distance) < MEMORY_MATCH_THRESHOLD:
+            return None
+        return ids[0][0]
+
+    def delete(self, query: str) -> int:
+        hit_id = self._locate(query)
+        if hit_id is None:
+            return 0
+        self.collection.delete(ids=[hit_id])
+        return 1
+
+    def update(self, query: str, new_doc: str) -> bool:
+        hit_id = self._locate(query)
+        if hit_id is None:
+            return False
+        meta = (self.collection.query(query_texts=[query], n_results=1).get("metadatas") or [[{}]])[0][0]
+        new_meta = {**meta, "timestamp": datetime.now().isoformat(), "count": 1}
+        self.collection.update(ids=[hit_id], documents=[new_doc], metadatas=[new_meta])
+        return True
 
     def search(self, query: str, top_k: int = 3) -> list[MemoryHit]:
-        results = self.collection.query(query_texts=[query], n_results=top_k)
+        candidates = max(top_k * 3, top_k)
+        results = self.collection.query(query_texts=[query], n_results=candidates)
         hits = []
         docs = results.get("documents")
         if docs and docs[0]:
+            metas = results.get("metadatas", [[{}]])[0] if results.get("metadatas") else [{}] * len(docs[0])
+            ids = results.get("ids", [[]])[0] if results.get("ids") else []
+            dists = results.get("distances", [[0.0]])[0] if results.get("distances") else [0.0] * len(docs[0])
             for i, doc in enumerate(docs[0]):
-                meta = results.get("metadatas", [[{}]])[0][i] if results.get("metadatas") else {}
-                distance = results["distances"][0][i] if results.get("distances") else 0.0
-                score = 1.0 / (1.0 + distance)
+                meta = metas[i] if i < len(metas) else {}
+                ts = meta.get("timestamp", "")
+                raw = 1.0 / (1.0 + (dists[i] if i < len(dists) else 0.0))
                 hits.append(MemoryHit(
                     task=meta.get("task", ""),
                     document=doc,
-                    score=score,
+                    score=self._decayed_score(raw, ts),
+                    id=ids[i] if i < len(ids) else None,
+                    count=int(meta.get("count", 1)),
+                    timestamp=ts,
                 ))
-        return hits
+        hits.sort(key=lambda h: h.score, reverse=True)
+        return hits[:top_k]
+
+    def _decayed_score(self, raw_score: float, timestamp_iso: str) -> float:
+        if not timestamp_iso:
+            return raw_score
+        try:
+            age_days = (datetime.now() - datetime.fromisoformat(timestamp_iso)).total_seconds() / 86400.0
+        except (ValueError, TypeError):
+            return raw_score
+        return raw_score * math.exp(-max(0.0, age_days) / self.half_life_days)
 
     def clear(self):
         ids = self.collection.get().get("ids", [])

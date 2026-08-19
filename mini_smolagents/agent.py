@@ -74,6 +74,9 @@ class Agent:
         if profile_dir:
             self.tools["update_profile"] = self._build_update_profile_tool()
 
+        if memory is not None or facts_memory is not None:
+            self.tools["forget"] = self._build_forget_tool()
+
     def _ensure_registry(self):
         if self.registry is None:
             self.registry = AgentRegistry()
@@ -139,6 +142,48 @@ class Agent:
                 "required": ["name", "task"],
             },
             func=create_sub_agent,
+        )
+
+    def _build_forget_tool(self):
+        agent_self = self
+
+        def forget(query: str) -> str:
+            removed = 0
+            problems = []
+            if agent_self.memory is not None:
+                try:
+                    removed += agent_self.memory.delete(query)
+                except Exception as e:
+                    logger.debug("任务记忆删除失败: %s", e)
+                    problems.append("任务记忆删除失败")
+            if agent_self.facts_memory is not None:
+                try:
+                    removed += agent_self.facts_memory.delete(query)
+                except Exception as e:
+                    logger.debug("用户事实删除失败: %s", e)
+                    problems.append("用户事实删除失败")
+            if removed:
+                message = f"已删除 {removed} 条与「{query}」相关的记忆。"
+            else:
+                message = f"未找到与「{query}」相关的记忆。"
+            if problems:
+                message += "；" + "；".join(problems)
+            return message
+
+        return Tool(
+            name="forget",
+            description=(
+                "删除与查询内容最相关的历史记忆或用户事实。"
+                "当用户明确要求忘记某事、或过去记录的某条信息已不再正确且应删除时调用。"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "要遗忘的内容描述"},
+                },
+                "required": ["query"],
+            },
+            func=forget,
         )
 
     def _build_update_profile_tool(self):
@@ -461,12 +506,12 @@ class Agent:
         tool_names = [t.strip() for t in tools_str.split(",") if t.strip()]
         sub_tools = []
         for tn in tool_names:
-            if tn in self.tools and tn not in ("create_sub_agent", "final_answer", "update_profile"):
+            if tn in self.tools and tn not in ("create_sub_agent", "final_answer", "update_profile", "forget"):
                 sub_tools.append(self.tools[tn])
         if not sub_tools:
             sub_tools = [
                 t for t in self.tools.values()
-                if t.name not in ("create_sub_agent", "final_answer", "update_profile")
+                if t.name not in ("create_sub_agent", "final_answer", "update_profile", "forget")
             ]
 
         if name in self._sub_results and self._sub_results[name]:

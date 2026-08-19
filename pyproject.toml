@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv",
     "rich>=13.0",
     "chromadb>=0.4",
+    "sentence-transformers>=2.2",
 ]
 
 [tool.setuptools.packages.find]

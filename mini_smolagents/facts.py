@@ -2,7 +2,9 @@
 import uuid
 from datetime import datetime
 
-from .config import FACT_DEDUP_THRESHOLD, TRUNC_MEDIUM
+from ._chroma import get_client
+from .config import FACT_DEDUP_THRESHOLD, MEMORY_MATCH_THRESHOLD, TRUNC_MEDIUM
+from .embedding import get_embedding_function
 
 
 class FactsMemory:
@@ -15,11 +17,53 @@ class FactsMemory:
             raise ImportError(
                 "FactsMemory 需要 chromadb，请先安装：pip install chromadb"
             ) from e
-        self.client = chromadb.PersistentClient(path=persist_dir)
-        self.collection = self.client.get_or_create_collection(
-            name=collection_name, embedding_function=embedding_fn
-        )
+        self.client = get_client(persist_dir)
+        self.embedding_fn = embedding_fn if embedding_fn is not None else get_embedding_function()
+        self.collection = self._ensure_collection(collection_name)
         self.dedup_threshold = FACT_DEDUP_THRESHOLD
+
+    def _ensure_collection(self, name: str):
+        """探测既有 collection 维度，与当前 embedding 不符（含空库）则重建。"""
+        fn = self.embedding_fn
+        if fn is None:
+            try:
+                existing = self.client.get_collection(name)
+            except Exception:
+                existing = None
+            if existing is not None and (existing.metadata or {}).get("embedding_dim"):
+                logger.warning("事实库 %s 由中文 embedding 构建但模型不可用，降级重建为内置 embedding", name)
+                try:
+                    self.client.delete_collection(name)
+                except Exception:
+                    pass
+            return self.client.get_or_create_collection(name, embedding_function=None)
+        dim = fn.dim
+        try:
+            existing = self.client.get_collection(name)
+        except Exception:
+            existing = None
+        if existing is not None:
+            same_space = (existing.metadata or {}).get("embedding_dim") == dim
+            if not same_space:
+                try:
+                    sample = existing.get(limit=1, include=["embeddings"])
+                    emb = (sample.get("embeddings") or [None])[0]
+                except Exception:
+                    emb = None
+                if emb is None:
+                    logger.info("事实库 %s 为空，重建以使用中文 embedding (dim=%d)", name, dim)
+                else:
+                    logger.warning(
+                        "事实库 %s 向量维度 %d 与当前 embedding %d 不符，已重建（旧向量空间不兼容）",
+                        name, len(emb), dim,
+                    )
+                try:
+                    self.client.delete_collection(name)
+                except Exception:
+                    pass
+            else:
+                return existing
+        return self.client.create_collection(name, embedding_function=fn, metadata={"embedding_dim": dim})
 
     def add(self, fact: str) -> bool:
         fact = (fact or "").strip()
@@ -36,6 +80,34 @@ class FactsMemory:
             documents=[fact[:TRUNC_MEDIUM]],
             metadatas=[{"timestamp": datetime.now().isoformat()}],
             ids=[str(uuid.uuid4())],
+        )
+        return True
+
+    def _locate(self, query: str):
+        existing = self.collection.query(query_texts=[query], n_results=1)
+        ids = existing.get("ids")
+        if not ids or not ids[0]:
+            return None
+        distance = (existing.get("distances") or [[0.0]])[0][0]
+        if 1.0 / (1.0 + distance) < MEMORY_MATCH_THRESHOLD:
+            return None
+        return ids[0][0]
+
+    def delete(self, query: str) -> int:
+        hit_id = self._locate(query)
+        if hit_id is None:
+            return 0
+        self.collection.delete(ids=[hit_id])
+        return 1
+
+    def update(self, query: str, new_fact: str) -> bool:
+        hit_id = self._locate(query)
+        if hit_id is None:
+            return False
+        self.collection.update(
+            ids=[hit_id],
+            documents=[new_fact[:TRUNC_MEDIUM]],
+            metadatas=[{"timestamp": datetime.now().isoformat()}],
         )
         return True
 

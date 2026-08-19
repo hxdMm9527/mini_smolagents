@@ -1,4 +1,4 @@
-﻿# mini_smolagents
+# mini_smolagents
 
 从零实现的轻量级 Agent 框架（对标 smolagents），支持终端与 Web UI 两种交互方式，核心引擎、多 Agent 协作、RAG 记忆系统均为独立实现，无 LangChain 依赖。
 
