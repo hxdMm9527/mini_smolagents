@@ -89,9 +89,13 @@ class FactsMemory:
         if not ids or not ids[0]:
             return None
         distance = (existing.get("distances") or [[0.0]])[0][0]
-        if 1.0 / (1.0 + distance) < MEMORY_MATCH_THRESHOLD:
-            return None
-        return ids[0][0]
+        if 1.0 / (1.0 + distance) >= MEMORY_MATCH_THRESHOLD:
+            return ids[0][0]
+        doc = (existing.get("documents") or [[]])[0][0]
+        q = query.strip()
+        if len(q) >= 2 and q in doc:
+            return ids[0][0]
+        return None
 
     def delete(self, query: str) -> int:
         hit_id = self._locate(query)

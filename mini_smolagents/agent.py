@@ -11,7 +11,7 @@ if sys.stdout.encoding.lower() != "utf-8":
 from rich.console import Console
 
 from .a2a import AgentRegistry
-from .config import DEFAULT_MAX_STEPS, DEFAULT_WINDOW_SIZE, FACTS_TOP_K, MEMORY_TOP_K, SUB_AGENT_MAX_STEPS, TOOL_RETRY_ATTEMPTS, TRUNC_LONG, TRUNC_MEDIUM, TRUNC_SHORT
+from .config import DEFAULT_MAX_STEPS, DEFAULT_WINDOW_SIZE, EXPERIENCE_MIN_COUNT, EXPERIENCE_TOP_K, FACTS_TOP_K, MEMORY_TOP_K, SUB_AGENT_MAX_STEPS, TOOL_RETRY_ATTEMPTS, TRUNC_LONG, TRUNC_MEDIUM, TRUNC_SHORT
 from .console import print_event
 from .context import ContextComposer, SessionMetadata
 from .default_tools import final_answer as _FINAL_ANSWER_TOOL
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None, profile_dir=None, facts_memory=None, auto_extract_facts=False):
+    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None, profile_dir=None, facts_memory=None, auto_extract_facts=False, experience_memory=None, auto_extract_experience=False):
         self.model = model
         self.max_steps = max_steps
         self.window_size = window_size
@@ -47,6 +47,8 @@ class Agent:
         self._profile = None
         self.facts_memory = facts_memory
         self.auto_extract_facts = auto_extract_facts
+        self.experience_memory = experience_memory
+        self.auto_extract_experience = auto_extract_experience
         self.tools = {}
         self._sub_results: dict[str, str] = {}
         self._delegation_count = 0
@@ -74,7 +76,7 @@ class Agent:
         if profile_dir:
             self.tools["update_profile"] = self._build_update_profile_tool()
 
-        if memory is not None or facts_memory is not None:
+        if memory is not None or facts_memory is not None or experience_memory is not None:
             self.tools["forget"] = self._build_forget_tool()
 
     def _ensure_registry(self):
@@ -162,6 +164,12 @@ class Agent:
                 except Exception as e:
                     logger.debug("用户事实删除失败: %s", e)
                     problems.append("用户事实删除失败")
+            if agent_self.experience_memory is not None:
+                try:
+                    removed += agent_self.experience_memory.delete(query)
+                except Exception as e:
+                    logger.debug("经验删除失败: %s", e)
+                    problems.append("经验删除失败")
             if removed:
                 message = f"已删除 {removed} 条与「{query}」相关的记忆。"
             else:
@@ -318,6 +326,54 @@ class Agent:
             except Exception as e:
                 logger.debug("fact 写入失败: %s", e)
 
+    def _retrieve_experience(self, task: str) -> list[str]:
+        if not self.experience_memory:
+            return []
+        try:
+            hits = self.experience_memory.search(task, top_k=EXPERIENCE_TOP_K)
+        except Exception as e:
+            logger.debug("经验召回失败: %s", e)
+            return []
+        return [h.document[:TRUNC_SHORT] for h in hits]
+
+    def _distill_experience(self, hit) -> str:
+        prompt = (
+            f"以下任务在历史中成功完成过 {hit.count} 次：\n"
+            f"任务：{hit.task}\n成功结果摘要：{hit.document[:TRUNC_MEDIUM]}\n\n"
+            "请提炼一条可复用的通用经验（30-80 字）：关注可迁移的步骤、易错点、关键工具或参数。"
+            "只返回经验文本本身，不要解释，不要 JSON 格式。"
+        )
+        distill_msgs = [
+            {"role": "system", "content": "你是善于从重复成功中提炼可复用经验的助手。"},
+            {"role": "user", "content": prompt},
+        ]
+        resp = self.model.generate(distill_msgs)
+        text = (resp.content or "").strip()
+        return text if 10 <= len(text) <= TRUNC_MEDIUM else ""
+
+    def _auto_extract_experience(self, task, final):
+        if not self.auto_extract_experience or not self.experience_memory or not self.memory:
+            return
+        try:
+            hits = self.memory.search(task, top_k=EXPERIENCE_TOP_K)
+        except Exception as e:
+            logger.debug("经验提炼：记忆检索失败: %s", e)
+            return
+        candidates = [h for h in hits if getattr(h, "count", 1) >= EXPERIENCE_MIN_COUNT]
+        if not candidates:
+            return
+        try:
+            exp = self._distill_experience(candidates[0])
+        except Exception as e:
+            logger.debug("经验提炼失败: %s", e)
+            return
+        if not exp:
+            return
+        try:
+            self.experience_memory.add(exp)
+        except Exception as e:
+            logger.debug("经验写入失败: %s", e)
+
     def _build_tools_schema(self):
         schema = []
         for t in self.tools.values():
@@ -407,11 +463,15 @@ class Agent:
             return []
 
     def _recall_text(self, task: str) -> str:
-        """L5 召回层文本（MVP 保留现有向量召回）。"""
+        """L5 召回层文本：案例记忆 + 过去经验。"""
         history = self._retrieve_memory(task)
-        if not history:
-            return ""
-        return "\n".join(f"- {h.task} → {h.document[:TRUNC_SHORT]}" for h in history)
+        parts = []
+        if history:
+            parts.append("\n".join(f"- {h.task} → {h.document[:TRUNC_SHORT]}" for h in history))
+        experience = self._retrieve_experience(task)
+        if experience:
+            parts.append("过去经验：\n" + "\n".join(f"- {e}" for e in experience))
+        return "\n\n".join(parts)
 
     def _update_rolling_summary(self, overflow):
         """将新滑出窗口的消息增量摘要，追加到摘要块（L3）。"""
@@ -735,6 +795,7 @@ class Agent:
                     yield self._event("done", content=final, stored=stored, session_id=self.session_id)
                     self._commit_profile()
                     self._auto_extract_facts(task, messages)
+                    self._auto_extract_experience(task, final)
                     self._save_checkpoint(messages)
                     return
 

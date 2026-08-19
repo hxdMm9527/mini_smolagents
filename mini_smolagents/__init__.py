@@ -3,6 +3,7 @@ from .agent import Agent
 from .code_agent import CodeAgent
 from .default_tools import final_answer, python_interpreter, web_search
 from .llm import OpenAIModel
+from .experience import ExperienceMemory
 from .facts import FactsMemory
 from .memory import Checkpoint, EpisodicMemory
 from .tools import tool
@@ -19,6 +20,7 @@ __all__ = [
     "final_answer",
     "EpisodicMemory",
     "FactsMemory",
+    "ExperienceMemory",
     "Checkpoint",
     "AgentCard",
     "AgentRegistry",

@@ -31,6 +31,8 @@ def test_backend_facts_shared(agents):
 def test_backend_extract_only_on_main(agents):
     main, pm, developer, reviewer = _unpack(agents)
     assert main.auto_extract_facts is True
+    assert main.experience_memory is not None
+    assert main.auto_extract_experience is True
     assert pm.auto_extract_facts is False
     assert developer.auto_extract_facts is False
     assert reviewer.auto_extract_facts is False

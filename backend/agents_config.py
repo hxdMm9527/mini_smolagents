@@ -4,11 +4,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from mini_smolagents import Agent, AgentRegistry, Checkpoint, EpisodicMemory, FactsMemory, OpenAIModel, python_interpreter, web_search
+from mini_smolagents import Agent, AgentRegistry, Checkpoint, EpisodicMemory, ExperienceMemory, FactsMemory, OpenAIModel, python_interpreter, web_search
 
 REGISTRY = AgentRegistry()
 MEMORY = EpisodicMemory(collection_name="agent_memory", persist_dir="./chroma_db")
 FACTS = FactsMemory(collection_name="user_facts", persist_dir="./chroma_db")
+EXPERIENCE = ExperienceMemory(collection_name="experience_memory", persist_dir="./chroma_db")
 CHECKPOINT = Checkpoint(base_dir=".memory")
 
 MAIN_AGENT_NAME = "助手"
@@ -106,6 +107,8 @@ def build_agents() -> dict[str, Agent]:
         memory=MEMORY,
         facts_memory=FACTS,
         auto_extract_facts=True,
+        experience_memory=EXPERIENCE,
+        auto_extract_experience=True,
         checkpoint=CHECKPOINT,
     )
 
