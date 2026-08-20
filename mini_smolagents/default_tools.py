@@ -9,7 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import time as _time
 
 from ._exec import run_with_timeout
-from .config import BAIDU_MIN_INTERVAL, BAIDU_PAGE_TIMEOUT, PYTHON_INTERPRETER_TIMEOUT, SEARCH_CACHE_SIZE, SEARCH_CACHE_TTL, TRUNC_SHORT, WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_TIMEOUT
+from .config import BAIDU_MIN_INTERVAL, BAIDU_PAGE_TIMEOUT, BING_MIN_INTERVAL, BING_PAGE_TIMEOUT, PYTHON_INTERPRETER_TIMEOUT, SEARCH_CACHE_SIZE, SEARCH_CACHE_TTL, TRUNC_SHORT, WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_TIMEOUT
 from .tools import tool
 
 ALLOWED_IMPORTS = ["math", "json", "re", "datetime", "random", "collections"]
@@ -78,6 +78,28 @@ def _baidu_throttle():
     _last_baidu_ts = _time.monotonic()
 
 
+_bing_opener = None
+_last_bing_ts = 0.0
+
+
+def _get_bing_opener():
+    global _bing_opener
+    if _bing_opener is None:
+        cj = _cookiejar.CookieJar()
+        opener = _urlrequest.build_opener(_urlrequest.HTTPCookieProcessor(cj))
+        opener.addheaders = list(_BAIDU_HEADERS.items())
+        _bing_opener = opener
+    return _bing_opener
+
+
+def _bing_throttle():
+    global _last_bing_ts
+    wait = BING_MIN_INTERVAL - (_time.monotonic() - _last_bing_ts)
+    if wait > 0:
+        _time.sleep(wait)
+    _last_bing_ts = _time.monotonic()
+
+
 def _get_baidu_opener():
     global _baidu_opener
     if _baidu_opener is None:
@@ -118,6 +140,36 @@ def _parse_baidu_html(html_text: str) -> list[dict]:
                 break
         results.append({"title": title, "href": href, "body": snippet})
     return results
+
+
+def _parse_bing_html(html_text: str) -> list[dict]:
+    """解析必应搜索结果页：b_algo 容器内提取标题链接（h2>a）与摘要（b_caption）。"""
+    results = []
+    for block in _re.split(r'<li class="b_algo"', html_text)[1:]:
+        a = _re.search(r'<h2[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', block, _re.DOTALL)
+        if not a:
+            continue
+        href = a.group(1)
+        title = _html.unescape(_re.sub(r"<[^>]+>", "", a.group(2))).strip()
+        if not title:
+            continue
+        if not href.startswith("http"):
+            href = "https://cn.bing.com" + href
+        snippet = ""
+        cap = _re.search(r'<div class="b_caption">(.*?)</div>', block, _re.DOTALL)
+        if cap:
+            snippet = _html.unescape(_re.sub(r"<[^>]+>", "", cap.group(1))).strip()[:TRUNC_SHORT]
+        results.append({"title": title, "href": href, "body": snippet})
+    return results
+
+
+def _bing_search(query: str, max_results: int) -> list[dict]:
+    """必应（cn.bing.com）网页搜索。"""
+    opener = _get_bing_opener()
+    url = "https://cn.bing.com/search?" + _urlparse.urlencode({"q": query, "count": max_results})
+    with opener.open(url, timeout=BING_PAGE_TIMEOUT) as resp:
+        html_text = resp.read().decode("utf-8", errors="ignore")
+    return _parse_bing_html(html_text)
 
 
 def _is_baidu_verification(html_text: str) -> bool:
@@ -166,6 +218,18 @@ def web_search(query: str) -> str:
             errors.append(f"baidu: {type(e).__name__}: {e}")
 
         try:
+            _bing_throttle()
+            items = _bing_search(query, WEB_SEARCH_MAX_RESULTS)
+            if items:
+                output = _format(items)
+                _cache_put(cache_key, output)
+                result["output"] = output
+                return
+            errors.append("bing: no results")
+        except Exception as e:
+            errors.append(f"bing: {type(e).__name__}: {e}")
+
+        try:
             from ddgs import DDGS
             with DDGS(timeout=8) as ddgs:
                 items = list(ddgs.text(query, max_results=WEB_SEARCH_MAX_RESULTS))
@@ -183,8 +247,7 @@ def web_search(query: str) -> str:
     result["timed_out"] = run_with_timeout(_do_search, WEB_SEARCH_TIMEOUT)
 
     if result["timed_out"]:
-        return ("Error: web search timed out. 百度疑似风控拦截（IP 冷却中），详情后续重试；"
-                f"DuckDuckGo 国内不可直连（{WEB_SEARCH_TIMEOUT} 秒预算耗尽）。")
+        return f"Error: web search timed out. 全部后端失败，{WEB_SEARCH_TIMEOUT} 秒预算耗尽。\n        百度风控拦截时需 IP 冷却，请稍后再试或更换网络。"
     if result["error"]:
         if "安全验证" in result["error"] or "拦截" in result["error"]:
             return "Error: 百度风控拦截（IP 冷却中，通常数小时），请稍后再试或更换网络。"

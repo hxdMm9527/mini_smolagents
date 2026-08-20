@@ -72,6 +72,7 @@ def test_web_search_uses_baidu_and_skips_ddgs():
 
 def test_web_search_falls_back_to_ddgs():
     with patch("mini_smolagents.default_tools._baidu_search", side_effect=RuntimeError("拦截")), \
+         patch("mini_smolagents.default_tools._bing_search", side_effect=ConnectionError("refused")), \
          patch("ddgs.DDGS") as ddgs_cls:
         ddgs_cls.return_value.__enter__.return_value.text.return_value = [
             {"title": "DuckDuckGo 结果", "href": "https://ddg.example/x", "body": "fallback 内容"},
@@ -83,6 +84,7 @@ def test_web_search_falls_back_to_ddgs():
 
 def test_web_search_both_fail_reports_error():
     with patch("mini_smolagents.default_tools._baidu_search", side_effect=ConnectionError("refused")), \
+         patch("mini_smolagents.default_tools._bing_search", side_effect=ConnectionError("refused")), \
          patch("ddgs.DDGS", side_effect=Exception("timeout")):
         out = web_search.func("query")
     assert out.startswith("Error:")

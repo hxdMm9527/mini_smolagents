@@ -49,7 +49,9 @@ def test_baidu_throttle_sleeps_between_calls():
 
 
 def test_error_message_mentions_cooldown():
-    with patch("mini_smolagents.default_tools._baidu_search", side_effect=RuntimeError("百度安全验证拦截")):
+    with patch("mini_smolagents.default_tools._baidu_search", side_effect=RuntimeError("百度安全验证拦截")), \
+         patch("mini_smolagents.default_tools._bing_search", side_effect=ConnectionError("refused")), \
+         patch("ddgs.DDGS", side_effect=Exception("timeout")):
         out = web_search.func("广州天气")
     assert "风控拦截" in out
     assert "冷却" in out
