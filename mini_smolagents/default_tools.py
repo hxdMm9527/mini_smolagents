@@ -4,10 +4,12 @@ import io
 import re as _re
 import urllib.parse as _urlparse
 import urllib.request as _urlrequest
+from collections import OrderedDict
 from contextlib import redirect_stderr, redirect_stdout
+import time as _time
 
 from ._exec import run_with_timeout
-from .config import BAIDU_PAGE_TIMEOUT, PYTHON_INTERPRETER_TIMEOUT, TRUNC_SHORT, WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_TIMEOUT
+from .config import BAIDU_MIN_INTERVAL, BAIDU_PAGE_TIMEOUT, PYTHON_INTERPRETER_TIMEOUT, SEARCH_CACHE_SIZE, SEARCH_CACHE_TTL, TRUNC_SHORT, WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_TIMEOUT
 from .tools import tool
 
 ALLOWED_IMPORTS = ["math", "json", "re", "datetime", "random", "collections"]
@@ -45,6 +47,35 @@ _BAIDU_HEADERS = {
 }
 
 _baidu_opener = None
+
+_search_cache = OrderedDict()
+_last_baidu_ts = 0.0
+
+
+def _cache_get(key):
+    now = _time.monotonic()
+    hit = _search_cache.pop(key, None)
+    if hit is not None:
+        if now - hit["ts"] <= SEARCH_CACHE_TTL:
+            _search_cache[key] = hit
+            return hit["value"]
+        _search_cache.pop(key, None)
+    return None
+
+
+def _cache_put(key, value):
+    _search_cache.pop(key, None)
+    _search_cache[key] = {"ts": _time.monotonic(), "value": value}
+    while len(_search_cache) > SEARCH_CACHE_SIZE:
+        _search_cache.popitem(last=False)
+
+
+def _baidu_throttle():
+    global _last_baidu_ts
+    wait = BAIDU_MIN_INTERVAL - (_time.monotonic() - _last_baidu_ts)
+    if wait > 0:
+        _time.sleep(wait)
+    _last_baidu_ts = _time.monotonic()
 
 
 def _get_baidu_opener():
@@ -115,11 +146,20 @@ def web_search(query: str) -> str:
         )
 
     def _do_search():
+        cache_key = (query, WEB_SEARCH_MAX_RESULTS)
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            result["output"] = cached
+            return
+
         errors = []
         try:
+            _baidu_throttle()
             items = _baidu_search(query, WEB_SEARCH_MAX_RESULTS)
             if items:
-                result["output"] = _format(items)
+                output = _format(items)
+                _cache_put(cache_key, output)
+                result["output"] = output
                 return
             errors.append("baidu: no results")
         except Exception as e:
@@ -130,7 +170,9 @@ def web_search(query: str) -> str:
             with DDGS(timeout=8) as ddgs:
                 items = list(ddgs.text(query, max_results=WEB_SEARCH_MAX_RESULTS))
             if items:
-                result["output"] = _format(items)
+                output = _format(items)
+                _cache_put(cache_key, output)
+                result["output"] = output
                 return
             errors.append("ddgs: no results")
         except Exception as e:
@@ -141,8 +183,11 @@ def web_search(query: str) -> str:
     result["timed_out"] = run_with_timeout(_do_search, WEB_SEARCH_TIMEOUT)
 
     if result["timed_out"]:
-        return "Error: web search timed out (15-second limit)."
+        return ("Error: web search timed out. 百度疑似风控拦截（IP 冷却中），详情后续重试；"
+                f"DuckDuckGo 国内不可直连（{WEB_SEARCH_TIMEOUT} 秒预算耗尽）。")
     if result["error"]:
+        if "安全验证" in result["error"] or "拦截" in result["error"]:
+            return "Error: 百度风控拦截（IP 冷却中，通常数小时），请稍后再试或更换网络。"
         return f"Error: {result['error']}"
     return result["output"]
 

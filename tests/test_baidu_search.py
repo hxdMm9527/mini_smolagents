@@ -8,6 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import mini_smolagents.default_tools as _dt
 from mini_smolagents.default_tools import (
     _is_baidu_verification,
     _parse_baidu_html,
@@ -15,6 +16,13 @@ from mini_smolagents.default_tools import (
 )
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
+
+
+@pytest.fixture(autouse=True)
+def _clean_cache():
+    _dt._search_cache.clear()
+    yield
+    _dt._search_cache.clear()
 
 
 def _load(name):
@@ -74,7 +82,7 @@ def test_web_search_falls_back_to_ddgs():
 
 
 def test_web_search_both_fail_reports_error():
-    with patch("mini_smolagents.default_tools._baidu_search", side_effect=RuntimeError("拦截")), \
+    with patch("mini_smolagents.default_tools._baidu_search", side_effect=ConnectionError("refused")), \
          patch("ddgs.DDGS", side_effect=Exception("timeout")):
         out = web_search.func("query")
     assert out.startswith("Error:")
