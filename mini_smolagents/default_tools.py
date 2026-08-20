@@ -66,7 +66,6 @@ _baidu_opener = None
 
 _search_cache = OrderedDict()
 _last_baidu_ts = 0.0
-_SEMANTIC_DUP = True
 
 
 _token_pat = _re.compile(r"[A-Za-z]{4,}|[\u4e00-\u9fff]{2,}|[0-9]{5,}")
@@ -128,7 +127,7 @@ def _cache_lookup(query, max_results, emb):
             _search_cache[exact] = hit
             return hit["value"], "exact"
         _search_cache.pop(exact, None)
-    if emb is None or not _SEMANTIC_DUP:
+    if emb is None:
         return None, None
     now = _time.monotonic()
     for k, v in list(_search_cache.items()):
