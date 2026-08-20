@@ -4,7 +4,29 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from mini_smolagents import Agent, AgentRegistry, Checkpoint, EpisodicMemory, ExperienceMemory, FactsMemory, OpenAIModel, python_interpreter, web_search
+from mini_smolagents import Agent, AgentRegistry, Checkpoint, EpisodicMemory, ExperienceMemory, FactsMemory, OpenAIModel, Tool, python_interpreter, web_search
+from mini_smolagents.config import SUB_AGENT_MAX_STEPS
+import mini_smolagents.default_tools as _dt
+
+
+def _make_researcher_search() -> Tool:
+    """researcher 专用搜索：执行期间关闭语义去重（精细多轮查询不被误拦），保留精确匹配。"""
+    search_tool = web_search
+
+    def _call(query: str) -> str:
+        prev = _dt._SEMANTIC_DUP
+        _dt._SEMANTIC_DUP = False
+        try:
+            return search_tool.func(query)
+        finally:
+            _dt._SEMANTIC_DUP = prev
+
+    return Tool(
+        name=search_tool.name,
+        description=search_tool.description,
+        parameters=search_tool.parameters,
+        func=_call,
+    )
 
 REGISTRY = AgentRegistry()
 MEMORY = EpisodicMemory(collection_name="agent_memory", persist_dir="./chroma_db")
@@ -43,16 +65,24 @@ PM_PROMPT = """\
 不要自己写代码，分给团队成员做。审核员是必须环节，不能跳过。\
 """
 
-MAIN_PROMPT = """\
-你是用户的专属助手。你的工作方式：
+RESEARCHER_PROMPT = """你是研究员（researcher）。你的任务是通过多轮网页搜索完成查询，并返回结构化总结。
+工作流程：
+1. 分析查询目标，设计完整精确的搜索词（主题+范围+限定词），不要一次问太杂
+2. 搜索后如果信息不足、或需要补充细节（具体数字/日期/来源），可以换更精确的 query 继续搜索——多轮精细查询是你的职责，放心进行
+3. 如果搜索结果以 [提示] 开头（命中缓存），说明该主题刚查过、结果一致，不要再换词纠缠，直接用已有结果推进
+4. 信息收集完成后用 final_answer 返回结构化总结：要点列表 + 关键数据 + 来源链接，不要遗漏
+不要中途停手，直到能回答查询为止。"""
+
+
+MAIN_PROMPT = """你是用户的专属助手。你的工作方式：
 1. 先理解用户的任务，自己决定完成方式，不依赖固定流程
 2. 每一轮判断你是否能直接回答：能回答就用 final_answer 返回完整答案，不要直接输出答案文本；不能回答就调用工具获取信息后再判断
-3. 需要信息：用 web_search 搜索。同一主题只搜索一次，一次查询要完整（主题+范围+限定词），不要用变体 query 反复搜索同一主题
+3. 需要信息：优先调用 researcher 研究助手完成搜索（它会多轮精细查询并总结返回，不占用你的上下文）。只有简单的单次查询才直接用 web_search，不要自己用变体 query 反复搜索同一主题
 4. 需要计算/数据处理/写代码：用 python_interpreter 执行
 5. 任务需要多次处理/查询，或任务复杂时：调用 create_sub_agent 创建子 Agent 进行，也可以自己一步步完成
 6. 判断自己已经能回答时，立即调用 final_answer 结束，不要再生成多余内容
-不要为了调用工具而调用工具。能直接回答就直接用 final_answer 回答。\
-"""
+不要为了调用工具而调用工具。能直接回答就直接用 final_answer 回答。"""
+
 
 
 def _model():
@@ -97,6 +127,15 @@ def build_agents() -> dict[str, Agent]:
         checkpoint=CHECKPOINT,
     )
 
+    researcher = Agent(
+        model=model,
+        tools=[_make_researcher_search()],
+        name="researcher",
+        description="研究员，负责通过多轮网页搜索收集信息并返回结构化总结。适合需要查资料、查数据、多主题对比的查询任务。",
+        system_prompt=RESEARCHER_PROMPT,
+        max_steps=SUB_AGENT_MAX_STEPS,
+    )
+
     main = Agent(
         model=model,
         tools=[web_search, python_interpreter],
@@ -116,8 +155,9 @@ def build_agents() -> dict[str, Agent]:
     REGISTRY.register(pm, capabilities=["project_management", "task_decomposition", "code_review_team"])
     REGISTRY.register(developer, capabilities=["code", "debug"])
     REGISTRY.register(reviewer, capabilities=["review"])
+    REGISTRY.register(researcher, capabilities=["web_search", "research"])
 
-    return {"助手": main, "PM": pm, "developer": developer, "reviewer": reviewer}
+    return {"助手": main, "PM": pm, "developer": developer, "reviewer": reviewer, "researcher": researcher}
 
 
 if __name__ == "__main__":
