@@ -86,3 +86,25 @@ def test_exact_match_still_works():
         web_search.func(BASE)
         web_search.func(BASE)
     assert bs.call_count == 1
+
+
+def test_two_char_entity_variants_hit():
+    cases = [
+        ("广州 天气 今日", "广州 明天 天气 预报"),
+        ("北京 房价 2026", "北京 新房 房价走势"),
+    ]
+    for first, second in cases:
+        _dt._search_cache.clear()
+        with _patch_backend() as bs:
+            out1 = web_search.func(first)
+            out2 = web_search.func(second)
+        assert bs.call_count == 1, f"{first!r} -> {second!r} 未命中语义缓存"
+        assert out1 == out2
+
+
+def test_two_char_entity_different_topic_blocked():
+    with _patch_backend() as bs:
+        web_search.func("广州 天气")
+        out2 = web_search.func("广州 美食推荐")
+    assert bs.call_count == 2
+    assert "缓存结果" in out2

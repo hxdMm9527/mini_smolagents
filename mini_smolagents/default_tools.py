@@ -13,7 +13,7 @@ from pathlib import Path as _Path
 
 from ._exec import run_with_timeout
 from .embedding import get_embedding_function
-from .config import BAIDU_MIN_INTERVAL, BAIDU_PAGE_TIMEOUT, BING_MIN_INTERVAL, BING_PAGE_TIMEOUT, PYTHON_INTERPRETER_TIMEOUT, SEARCH_CACHE_SIZE, SEARCH_CACHE_TTL, SEARCH_SEMANTIC_DUP_THRESHOLD, TRUNC_SHORT, WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_TIMEOUT
+from .config import BAIDU_MIN_INTERVAL, BAIDU_PAGE_TIMEOUT, BING_MIN_INTERVAL, BING_PAGE_TIMEOUT, PYTHON_INTERPRETER_TIMEOUT, SEARCH_CACHE_SIZE, SEARCH_CACHE_TTL, SEARCH_SEMANTIC_DUP_THRESHOLD, SEARCH_STOP_WORDS, TRUNC_SHORT, WEB_SEARCH_MAX_RESULTS, WEB_SEARCH_TIMEOUT
 from .tools import tool
 
 ALLOWED_IMPORTS = ["math", "json", "re", "datetime", "random", "collections"]
@@ -68,7 +68,7 @@ _search_cache = OrderedDict()
 _last_baidu_ts = 0.0
 
 
-_token_pat = _re.compile(r"[A-Za-z]{4,}|[\u4e00-\u9fff]{3,}|[0-9]{5,}")
+_token_pat = _re.compile(r"[A-Za-z]{4,}|[\u4e00-\u9fff]{2,}|[0-9]{5,}")
 
 
 def _shared_key_tokens(a: str, b: str) -> bool:
@@ -76,10 +76,10 @@ def _shared_key_tokens(a: str, b: str) -> bool:
         out = set()
         for m in _token_pat.findall(text):
             if any("\u4e00" <= ch <= "\u9fff" for ch in m):
-                for i in range(len(m) - 2):
-                    out.add(m[i:i + 3])
+                segs = (m,) if len(m) == 2 else {m[i:i + 3] for i in range(len(m) - 2)}
             else:
-                out.add(m)
+                segs = (m,)
+            out.update(g for g in segs if g not in SEARCH_STOP_WORDS)
         return out
     return bool(grams(a) & grams(b))
 
