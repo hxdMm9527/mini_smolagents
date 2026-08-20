@@ -36,8 +36,9 @@ def test_variant_served_from_semantic_cache():
     with _patch_backend() as bs:
         out1 = web_search.func(BASE)
         out2 = web_search.func(VARIANTS[0])
-    assert out1 == out2
     assert bs.call_count == 1
+    assert out2.startswith("[提示]")
+    assert out1 in out2
 
 
 def test_all_calibrated_variants_hit():
@@ -99,7 +100,8 @@ def test_two_char_entity_variants_hit():
             out1 = web_search.func(first)
             out2 = web_search.func(second)
         assert bs.call_count == 1, f"{first!r} -> {second!r} 未命中语义缓存"
-        assert out1 == out2
+        assert out2.startswith("[提示]")
+        assert out1 in out2
 
 
 def test_two_char_entity_different_topic_blocked():

@@ -290,7 +290,10 @@ def web_search(query: str) -> str:
         cached, _dup_hit = _cache_lookup(query, WEB_SEARCH_MAX_RESULTS, _query_emb)
         if cached is not None:
             _source = "cache"
-            result["output"] = cached
+            result["output"] = (
+                "[\u63d0\u793a] \u6b64\u67e5\u8be2\u4e0e\u521a\u521a\u6267\u884c\u8fc7\u7684\u67e5\u8be2\u4e3b\u9898\u76f8\u540c\uff0c\u547d\u4e2d\u7f13\u5b58\uff0c\u4ee5\u4e0b\u7ed3\u679c\u4e0e\u4e4b\u524d\u4e00\u81f4\u3002\u8bf7\u76f4\u63a5\u4f7f\u7528\u8fd9\u4e9b\u7ed3\u679c\uff0c\u4e0d\u8981\u518d\u6b21\u641c\u7d22\u76f8\u540c\u4e3b\u9898\uff0c\u4e5f\u4e0d\u8981\u4e3a\u6b64\u53d1\u8d77\u65b0\u7684\u67e5\u8be2\u3002\n\n"
+                + cached
+            )
             return
 
         errors = []

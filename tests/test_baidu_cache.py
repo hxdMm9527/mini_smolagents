@@ -27,8 +27,9 @@ def test_same_query_served_from_cache():
     with patch("mini_smolagents.default_tools._baidu_search", return_value=items) as bs:
         out1 = web_search.func("广州天气")
         out2 = web_search.func("广州天气")
-    assert out1 == out2
     assert bs.call_count == 1
+    assert out2.startswith("[提示]")
+    assert out1 in out2
 
 
 def test_different_query_not_cached():
