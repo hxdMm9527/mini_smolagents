@@ -716,3 +716,20 @@ def test_codeagent_checkpoint_resume(tmp_path):
     first_call = model2.calls[0]
     assert first_call[0]["role"] == "system"
     assert first_call[-1]["content"] == "续聊"
+
+class BoomModel:
+    """测试替身：generate 直接抛异常（模拟 LLM API 超时）。"""
+
+    def generate(self, messages, tools=None):
+        raise RuntimeError("LLM API 超时")
+
+
+def test_run_stream_yields_done_on_generate_error():
+    agent = Agent(model=BoomModel(), tools=[web_search], max_steps=2)
+    events = list(agent.run_stream("查一下"))
+    types = [e["type"] for e in events]
+    assert "done" in types
+    done = next(e for e in events if e["type"] == "done")
+    assert done["content"]
+    notes = [e["content"] for e in events if e["type"] == "note"]
+    assert any("执行中断" in n for n in notes)

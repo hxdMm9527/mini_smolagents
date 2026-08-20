@@ -658,6 +658,15 @@ class Agent:
             for ev in self._run_stream_inner(task, delegation_id):
                 turn["events"].append(ev)
                 yield ev
+        except Exception as e:
+            logger.error("%s 执行中断: %s: %s", self.name, type(e).__name__, e)
+            yield self._event("note", content=f"[{self.name}] 执行中断：{type(e).__name__}: {e}")
+            final = ""
+            if getattr(self, "_last_messages", None):
+                final = self._summarize_messages(self._last_messages)
+            if not final:
+                final = "（任务中断，已尽力收集过程信息，当前无可用结果）"
+            yield self._event("done", content=final, stored=False, session_id=self.session_id)
         finally:
             self._session_meta = None
 
