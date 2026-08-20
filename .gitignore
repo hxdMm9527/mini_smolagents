@@ -7,3 +7,4 @@ dist/
 openspec/
 chroma_db/
 .memory/
+search_log.jsonl
