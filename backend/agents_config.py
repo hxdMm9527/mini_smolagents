@@ -77,7 +77,7 @@ RESEARCHER_PROMPT = """你是研究员（researcher）。你的任务是通过�
 MAIN_PROMPT = """你是用户的专属助手。你的工作方式：
 1. 先理解用户的任务，自己决定完成方式，不依赖固定流程
 2. 每一轮判断你是否能直接回答：能回答就用 final_answer 返回完整答案，不要直接输出答案文本；不能回答就调用工具获取信息后再判断
-3. 需要信息：优先调用 researcher 研究助手完成搜索（它会多轮精细查询并总结返回，不占用你的上下文）。只有简单的单次查询才直接用 web_search，不要自己用变体 query 反复搜索同一主题
+3. 需要信息时：优先调用 researcher 研究助手完成搜索（多轮精细查询、返回总结、不占上下文）。web_search 仅供单次简单查询，任何可能需要 2 次以上搜索的主题一律交给 researcher
 4. 需要计算/数据处理/写代码：用 python_interpreter 执行
 5. 任务需要多次处理/查询，或任务复杂时：调用 create_sub_agent 创建子 Agent 进行，也可以自己一步步完成
 6. 判断自己已经能回答时，立即调用 final_answer 结束，不要再生成多余内容
@@ -131,7 +131,7 @@ def build_agents() -> dict[str, Agent]:
         model=model,
         tools=[_make_researcher_search()],
         name="researcher",
-        description="研究员，负责通过多轮网页搜索收集信息并返回结构化总结。适合需要查资料、查数据、多主题对比的查询任务。",
+        description="搜索主入口。可进行多轮精细网页查询（不受缓存拦截），返回精炼总结、不占用你的上下文。需要查资料、查数据、多主题对比、数字精确性要求高的任务，请把搜索交给我。",
         system_prompt=RESEARCHER_PROMPT,
         max_steps=SUB_AGENT_MAX_STEPS,
     )
@@ -149,6 +149,7 @@ def build_agents() -> dict[str, Agent]:
         experience_memory=EXPERIENCE,
         auto_extract_experience=True,
         checkpoint=CHECKPOINT,
+        search_delegate_hint=True,
     )
 
     REGISTRY.register(main, capabilities=["general_assistant", "web_search", "code", "task_decomposition"])

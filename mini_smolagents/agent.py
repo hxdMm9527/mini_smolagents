@@ -11,10 +11,10 @@ if sys.stdout.encoding.lower() != "utf-8":
 from rich.console import Console
 
 from .a2a import AgentRegistry
-from .config import DEFAULT_MAX_STEPS, DEFAULT_WINDOW_SIZE, EXPERIENCE_MIN_COUNT, EXPERIENCE_TOP_K, FACTS_TOP_K, MEMORY_TOP_K, SUB_AGENT_MAX_STEPS, TOOL_RETRY_ATTEMPTS, TRUNC_LONG, TRUNC_MEDIUM, TRUNC_SHORT
+from .config import DEFAULT_MAX_STEPS, DEFAULT_WINDOW_SIZE, EXPERIENCE_MIN_COUNT, EXPERIENCE_TOP_K, FACTS_TOP_K, MEMORY_TOP_K, SEARCH_SEMANTIC_DUP_THRESHOLD, SUB_AGENT_MAX_STEPS, TOOL_RETRY_ATTEMPTS, TRUNC_LONG, TRUNC_MEDIUM, TRUNC_SHORT
 from .console import print_event
 from .context import ContextComposer, SessionMetadata
-from .default_tools import final_answer as _FINAL_ANSWER_TOOL
+from .default_tools import _cos_sim, _emb_query, _shared_key_tokens, final_answer as _FINAL_ANSWER_TOOL
 from .facts import FactsMemory
 from .memory import MemoryHit, StorePolicy
 from .profile import Profile
@@ -23,10 +23,15 @@ from .types import ModelResponse, Tool
 
 logger = logging.getLogger(__name__)
 
+SEARCH_DELEGATE_HINT = (
+    "[系统] 你已就同一主题直接搜索 3 次，仍未获得完整信息。"
+    "请调用 researcher 子 Agent 完成剩余查询，不要继续直接搜索。"
+)
+
 
 
 class Agent:
-    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None, profile_dir=None, facts_memory=None, auto_extract_facts=False, experience_memory=None, auto_extract_experience=False):
+    def __init__(self, model, tools, max_steps=DEFAULT_MAX_STEPS, window_size=DEFAULT_WINDOW_SIZE, stream=False, name=None, description=None, managed_agents=None, allow_delegation=True, system_prompt=None, memory=None, checkpoint=None, session_id=None, registry=None, store_policy=None, profile_dir=None, facts_memory=None, auto_extract_facts=False, experience_memory=None, auto_extract_experience=False, search_delegate_hint=False):
         self.model = model
         self.max_steps = max_steps
         self.window_size = window_size
@@ -49,6 +54,12 @@ class Agent:
         self.auto_extract_facts = auto_extract_facts
         self.experience_memory = experience_memory
         self.auto_extract_experience = auto_extract_experience
+        self.search_delegate_hint = search_delegate_hint
+        self._search_series = 0
+        self._search_prev_query = None
+        self._search_prev_emb = None
+        self._search_hint_active = False
+        self._search_hint_injected = False
         self.tools = {}
         self._sub_results: dict[str, str] = {}
         self._delegation_count = 0
@@ -412,12 +423,43 @@ class Agent:
                         },
                     },
                 })
+        if self.search_delegate_hint and self._search_hint_active:
+            schema = [s for s in schema if s["function"]["name"] != "web_search"]
         return schema
 
+    def _track_search_series(self, args: dict):
+        """连续同主题直接搜索计数（与语义缓存同套判定），第 3 次起激活委派引导。"""
+        query = str(args.get("query", ""))
+        emb = _emb_query(query)
+        same = False
+        if self._search_prev_emb is not None and emb is not None and self._search_prev_query:
+            same = (
+                _cos_sim(emb, self._search_prev_emb) >= SEARCH_SEMANTIC_DUP_THRESHOLD
+                and _shared_key_tokens(self._search_prev_query, query)
+            )
+        self._search_series = self._search_series + 1 if same else 1
+        self._search_prev_query = query
+        self._search_prev_emb = emb
+        if self._search_series >= 3:
+            self._search_hint_active = True
+
+    def _reset_search_hint(self):
+        self._search_hint_active = False
+        self._search_series = 0
+        self._search_prev_query = None
+        self._search_prev_emb = None
+        self._search_hint_injected = False
+
     def _execute_tool(self, name: str, args: dict) -> str:
+        if self.search_delegate_hint and name == "web_search":
+            if self._search_hint_active:
+                return "直接搜索已暂停：你已就同一主题直接搜索 3 次，请调用 researcher 子 Agent 完成剩余查询。"
+            self._track_search_series(args)
         if name in self.tools:
             return self.tools[name].func(**args)
         if self.registry and self.registry.find(name):
+            if self.search_delegate_hint and name == "researcher" and self._search_hint_active:
+                self._reset_search_hint()
             return self._delegate(name, args["task"])
         return f"Error: unknown tool '{name}'"
 
@@ -719,6 +761,10 @@ class Agent:
         for step in range(1, self.max_steps + 1):
             yield self._event("step", step=step, max_steps=self.max_steps)
 
+            if self.search_delegate_hint and self._search_hint_active and not self._search_hint_injected:
+                messages.append({"role": "system", "content": SEARCH_DELEGATE_HINT})
+                self._search_hint_injected = True
+
             context = self._build_context(messages)
             tools_schema = self._build_tools_schema()
             msg = yield from self._generate_stream(context, tools_schema, delegation_id=delegation_id)
@@ -761,6 +807,8 @@ class Agent:
                 args = tc.arguments
 
                 if self._is_agent_call(tool_name):
+                    if self.search_delegate_hint and tool_name == "researcher" and self._search_hint_active:
+                        self._reset_search_hint()
                     did = str(uuid.uuid4())
                     yield self._event("action", tool=tool_name, args=args, delegation_id=did)
                     result = ""

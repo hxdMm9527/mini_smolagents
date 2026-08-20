@@ -272,7 +272,7 @@ def _baidu_search(query: str, max_results: int) -> list[dict]:
 
 @tool
 def web_search(query: str) -> str:
-    """Search the web for the given query. Returns up to 10 results with titles, URLs, and snippets. Baidu primary, Bing fallback, DuckDuckGo last. \u540c\u4e00\u4e3b\u9898\u53ea\u641c\u7d22\u4e00\u6b21\uff0c\u4e00\u6b21\u67e5\u8be2\u8981\u5b8c\u6574\uff08\u4e3b\u9898+\u8303\u56f4+\u9650\u5b9a\u8bcd\uff09\uff0c\u4e0d\u8981\u7528\u53d8\u4f53 query \u53cd\u590d\u641c\u7d22\u540c\u4e00\u4e3b\u9898\u3002"""
+    """Search the web for the given query. Returns up to 10 results with titles, URLs, and snippets. 单次查询工具：同一主题的变体查询会被语义缓存拦截并返回[提示]，无法自行做多轮精化。如需多角度查询、精确数据、多主题对比，请调用 researcher。"""
     result: dict = {"output": "", "error": "", "timed_out": False}
 
     def _format(items):
