@@ -663,9 +663,15 @@ class Agent:
 
         - 有 generate_stream 时：逐 token yield {"type":"token","content":...}
         - 无流式接口（测试 FakeModel）时：一次性 yield 完整 thought
+        - reasoner 的推理内容以 {"type":"thought","content":...} 透传
         """
         if not hasattr(self.model, "generate_stream"):
             resp = self.model.generate(messages, tools_schema)
+            if resp.reasoning:
+                ev = self._event("thought", content=resp.reasoning, reasoning=True)
+                if delegation_id:
+                    ev["delegation_id"] = delegation_id
+                yield ev
             if resp.content:
                 ev = self._event("thought", content=resp.content)
                 if delegation_id:
@@ -674,8 +680,15 @@ class Agent:
             return resp
 
         text = ""
+        reasoning = ""
         tool_calls = None
         for chunk in self.model.generate_stream(messages, tools_schema):
+            if chunk.reasoning:
+                reasoning += chunk.reasoning
+                ev = self._event("thought", content=chunk.reasoning, reasoning=True)
+                if delegation_id:
+                    ev["delegation_id"] = delegation_id
+                yield ev
             if chunk.content:
                 text += chunk.content
                 ev = self._event("token", content=chunk.content)
@@ -685,7 +698,7 @@ class Agent:
             if chunk.tool_calls:
                 tool_calls = chunk.tool_calls
 
-        return ModelResponse(content=text or None, tool_calls=tool_calls)
+        return ModelResponse(content=text or None, tool_calls=tool_calls, reasoning=reasoning or None)
 
     def run_stream(self, task: str, delegation_id: str | None = None):
         """核心执行逻辑的 generator。只 yield 事件，不打印，并收集本轮事件到 _current_turn。"""

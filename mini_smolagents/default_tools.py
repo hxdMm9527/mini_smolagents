@@ -259,6 +259,35 @@ def _is_baidu_verification(html_text: str) -> bool:
     return "安全验证" in html_text
 
 
+_PUB_DATE_RE = [
+    _re.compile(r"(\d{4})[年./-](\d{1,2})[月./-](\d{1,2})日?"),
+    _re.compile(r"(\d{1,2})月(\d{1,2})日"),
+]
+
+
+def _extract_pub_date(text: str) -> str | None:
+    """从标题/摘要开头提取发布日期（优先完整日期，其次 月日）。"""
+    head = (text or "")[:80]
+    for pat in _PUB_DATE_RE:
+        m = pat.search(head)
+        if not m:
+            continue
+        if len(m.groups()) == 3:
+            return f"{int(m.group(1))}年{int(m.group(2))}月{int(m.group(3))}日"
+        return f"{int(m.group(1))}月{int(m.group(2))}日"
+    return None
+
+
+@tool
+def get_current_time() -> str:
+    """获取当前本地日期、时间与星期几。回答依赖现实时间的问题（行情/股价/新闻时效/任务日期判断）前，先调用本工具确认当前时间，不要假设。"""
+    from datetime import datetime
+
+    now = datetime.now()
+    weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    return f"{now:%Y-%m-%d} {weekdays[now.weekday()]} {now:%H:%M:%S}"
+
+
 def _baidu_search(query: str, max_results: int) -> list[dict]:
     """百度网页搜索（带 cookie 会话，反爬验证页快速失败）。"""
     opener = _get_baidu_opener()
@@ -276,9 +305,14 @@ def web_search(query: str) -> str:
     result: dict = {"output": "", "error": "", "timed_out": False}
 
     def _format(items):
-        return "\n\n".join(
-            f"{i}. {r['title']}\n   {r['href']}\n   {r['body']}" for i, r in enumerate(items, 1)
-        )
+        out = []
+        for i, r in enumerate(items, 1):
+            line = f"{i}. {r['title']}\n   {r['href']}\n   {r['body']}"
+            pub = _extract_pub_date(f"{r['title']} {r['body']}")
+            if pub:
+                line += f"\n   [发布于 {pub}]"
+            out.append(line)
+        return "\n\n".join(out)
 
     _t0 = _time.monotonic()
     _source = "error"

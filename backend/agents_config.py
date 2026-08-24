@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from mini_smolagents import Agent, AgentRegistry, Checkpoint, EpisodicMemory, ExperienceMemory, FactsMemory, OpenAIModel, Tool, python_interpreter, web_search
+from mini_smolagents import Agent, AgentRegistry, Checkpoint, EpisodicMemory, ExperienceMemory, FactsMemory, OpenAIModel, Tool, get_current_time, python_interpreter, web_search
 from mini_smolagents.config import SUB_AGENT_MAX_STEPS
 import mini_smolagents.default_tools as _dt
 
@@ -85,16 +85,17 @@ MAIN_PROMPT = """你是用户的专属助手。你的工作方式：
 
 
 
-def _model():
-    return OpenAIModel()
+def _model(model_id: str = "deepseek-chat"):
+    return OpenAIModel(model_id=model_id)
 
 
 def build_agents() -> dict[str, Agent]:
     model = _model()
+    reasoner = _model("deepseek-reasoner")
 
     developer = Agent(
         model=model,
-        tools=[web_search, python_interpreter],
+        tools=[get_current_time, web_search, python_interpreter],
         name="developer",
         description="Python 开发者，写代码和调试。用 python_interpreter 逐步实现功能和测试。",
         system_prompt=DEV_PROMPT,
@@ -105,7 +106,7 @@ def build_agents() -> dict[str, Agent]:
 
     reviewer = Agent(
         model=model,
-        tools=[web_search],
+        tools=[get_current_time, web_search],
         name="reviewer",
         description="代码审核员，审查代码的逻辑错误、安全问题、代码风格，不重写代码。",
         system_prompt=REVIEWER_PROMPT,
@@ -116,7 +117,7 @@ def build_agents() -> dict[str, Agent]:
 
     pm = Agent(
         model=model,
-        tools=[web_search, python_interpreter],
+        tools=[get_current_time, web_search, python_interpreter],
         name="PM",
         description="技术项目经理，负责拆解用户需求、调度 developer/reviewer 团队成员完成代码任务并最终整合交付。",
         system_prompt=PM_PROMPT,
@@ -128,8 +129,8 @@ def build_agents() -> dict[str, Agent]:
     )
 
     researcher = Agent(
-        model=model,
-        tools=[_make_researcher_search()],
+        model=reasoner,
+        tools=[_make_researcher_search(), get_current_time],
         name="researcher",
         description="搜索主入口。可进行多轮精细网页查询（不受缓存拦截），返回精炼总结、不占用你的上下文。需要查资料、查数据、多主题对比、数字精确性要求高的任务，请把搜索交给我。",
         system_prompt=RESEARCHER_PROMPT,
@@ -137,8 +138,8 @@ def build_agents() -> dict[str, Agent]:
     )
 
     main = Agent(
-        model=model,
-        tools=[web_search, python_interpreter],
+        model=reasoner,
+        tools=[get_current_time, web_search, python_interpreter],
         name="助手",
         description="你的专属助手，自己决定如何完成任何任务：直接回答、搜索资料、执行代码或派子助手。",
         system_prompt=MAIN_PROMPT,

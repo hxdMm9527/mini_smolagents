@@ -10,6 +10,7 @@ class OpenAIModel:
     def __init__(self, model_id: str = "deepseek-chat", api_key: str | None = None, base_url: str | None = None, **kwargs):
         self.model_id = model_id
         self.client_kwargs = kwargs
+        self._is_reasoner = "reasoner" in model_id.lower()
 
         api_key = api_key or os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -32,6 +33,13 @@ class OpenAIModel:
         except json.JSONDecodeError:
             return {}
 
+    def _request_kwargs(self) -> dict:
+        kwargs = dict(self.client_kwargs)
+        if self._is_reasoner:
+            kwargs.pop("temperature", None)
+            kwargs.pop("top_p", None)
+        return kwargs
+
     def _to_response(self, message) -> ModelResponse:
         tcs = None
         if message.tool_calls:
@@ -43,14 +51,15 @@ class OpenAIModel:
                 )
                 for tc in message.tool_calls
             ]
-        return ModelResponse(content=message.content, tool_calls=tcs)
+        reasoning = getattr(message, "reasoning_content", None) or None
+        return ModelResponse(content=message.content, tool_calls=tcs, reasoning=reasoning)
 
     def generate(self, messages: list[dict], tools: list[dict] | None = None) -> ModelResponse:
         resp = self.client.chat.completions.create(
             model=self.model_id,
             messages=messages,
             tools=tools,
-            **self.client_kwargs,
+            **self._request_kwargs(),
         )
         return self._to_response(resp.choices[0].message)
 
@@ -60,7 +69,7 @@ class OpenAIModel:
             messages=messages,
             tools=tools,
             stream=True,
-            **self.client_kwargs,
+            **self._request_kwargs(),
         )
         tcs: dict[int, dict] = {}
         order: list[int] = []
@@ -70,6 +79,9 @@ class OpenAIModel:
             delta = chunk.choices[0].delta
             if delta is None:
                 continue
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield ModelResponse(reasoning=reasoning)
             if delta.content:
                 yield ModelResponse(content=delta.content)
             for tc in delta.tool_calls or []:

@@ -22,3 +22,4 @@ class ToolCall:
 class ModelResponse:
     content: str | None = None
     tool_calls: list[ToolCall] | None = None
+    reasoning: str | None = None
