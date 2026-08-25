@@ -8,3 +8,6 @@ openspec/
 chroma_db/
 .memory/
 search_log.jsonl
+
+# bge ONNX 模型（92MB，由 scripts/export_bge_onnx.py 生成）
+models/bge-small-zh-v1.5.onnx

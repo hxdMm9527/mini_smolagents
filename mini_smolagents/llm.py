@@ -1,5 +1,6 @@
 import json
 import os
+import re
 
 from openai import OpenAI
 
@@ -73,6 +74,7 @@ class OpenAIModel:
         )
         tcs: dict[int, dict] = {}
         order: list[int] = []
+        reasoning_buf = ""
         for chunk in stream:
             if not chunk.choices:
                 continue
@@ -81,7 +83,12 @@ class OpenAIModel:
                 continue
             reasoning = getattr(delta, "reasoning_content", None)
             if reasoning:
-                yield ModelResponse(reasoning=reasoning)
+                reasoning_buf += reasoning
+                if len(reasoning_buf) >= 32 and (
+                    re.search(r"[。！？!?.]\s*$", reasoning_buf) or len(reasoning_buf) >= 160
+                ):
+                    yield ModelResponse(reasoning=reasoning_buf)
+                    reasoning_buf = ""
             if delta.content:
                 yield ModelResponse(content=delta.content)
             for tc in delta.tool_calls or []:
@@ -96,6 +103,8 @@ class OpenAIModel:
                         tcs[idx]["name"] += tc.function.name
                     if tc.function.arguments:
                         tcs[idx]["arguments"] += tc.function.arguments
+        if reasoning_buf:
+            yield ModelResponse(reasoning=reasoning_buf)
         if order:
             parsed = [
                 ToolCall(

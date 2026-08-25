@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from mini_smolagents import Agent, AgentRegistry, Checkpoint, EpisodicMemory, ExperienceMemory, FactsMemory, OpenAIModel, Tool, get_current_time, python_interpreter, web_search
+from mini_smolagents.embedding import get_embedding_function
 from mini_smolagents.config import SUB_AGENT_MAX_STEPS
 import mini_smolagents.default_tools as _dt
 
@@ -29,6 +30,9 @@ def _make_researcher_search() -> Tool:
     )
 
 REGISTRY = AgentRegistry()
+# 预热 bge embedding：必须先于 chromadb 加载（chromadb×torch Windows 互操作，
+# chroma 先加载会让 bge 加载慢到 ~8s；bge 先行则两者均 <0.2s）
+get_embedding_function()
 MEMORY = EpisodicMemory(collection_name="agent_memory", persist_dir="./chroma_db")
 FACTS = FactsMemory(collection_name="user_facts", persist_dir="./chroma_db")
 EXPERIENCE = ExperienceMemory(collection_name="experience_memory", persist_dir="./chroma_db")
