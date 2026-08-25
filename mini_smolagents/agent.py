@@ -464,10 +464,18 @@ class Agent:
         return f"Error: unknown tool '{name}'"
 
     def _get_trimmed_messages(self, messages):
-        """滑动窗口：system + 最近 (window_size - 1) 条原文。"""
+        """滑动窗口：system + 最近 (window_size - 1) 条原文。
+
+        reasoner 严格校验：role=tool 消息必须前置带 tool_calls 的 assistant 消息。
+        截断后若窗口开头是孤立的 tool 消息，向前借一条或丢弃，避免 API 400。
+        """
         if len(messages) <= self.window_size:
             return messages
-        return [messages[0]] + messages[-(self.window_size - 1):]
+        head = messages[0]
+        window = messages[-(self.window_size - 1):]
+        while window and window[0].get("role") == "tool":
+            window = window[1:]
+        return [head] + window
 
     def _summarize_messages(self, messages):
         parts = []
@@ -539,6 +547,10 @@ class Agent:
         capacity = self.window_size - 1
         if len(rest) > capacity:
             window = rest[-capacity:]
+            # reasoner 严格校验：role=tool 必须前置带 tool_calls 的 assistant，
+            # 截断后窗口开头若为孤立 tool 消息则丢弃，避免 API 400
+            while window and window[0].get("role") == "tool":
+                window = window[1:]
             overflow = rest[:-capacity]
         else:
             window = rest

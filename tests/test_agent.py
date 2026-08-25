@@ -370,7 +370,8 @@ def test_rolling_summary_on_overflow():
 
     assert ctx[0]["role"] == "system"
     assert ctx[1]["role"] == "system" and "摘要块" in ctx[1]["content"]
-    assert [m["content"] for m in ctx[2:]] == ["t2", "a3", "t3"]
+    # 窗口开头不允许孤立 tool 消息（reasoner 严格校验 tool 必须前置 tool_calls），t2 被丢弃
+    assert [m["content"] for m in ctx[2:]] == ["a3", "t3"]
 
     # 无新溢出时不重复摘要
     agent._build_context(msgs)
@@ -733,3 +734,47 @@ def test_run_stream_yields_done_on_generate_error():
     assert done["content"]
     notes = [e["content"] for e in events if e["type"] == "note"]
     assert any("执行中断" in n for n in notes)
+
+
+def test_trim_window_never_starts_with_orphan_tool():
+    """滑动窗口截断后不允许以孤立的 tool 消息开头（reasoner 严格校验 400）。"""
+    model = FakeModel([ModelResponse(content="ok")])
+    agent = Agent(model=model, tools=[], window_size=6)
+    msgs = [{"role": "system", "content": "S"}]
+    for i in range(5):
+        msgs.append({"role": "user", "content": f"u{i}"})
+    msgs.append({"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "x", "arguments": "{}"}}]})
+    msgs.append({"role": "tool", "tool_call_id": "c1", "content": "r1"})
+    trimmed = agent._get_trimmed_messages(msgs)
+    assert len(trimmed) == 6
+    assert trimmed[0]["role"] == "system"
+    assert all(m["role"] != "tool" for m in trimmed) or trimmed[1]["role"] != "tool"
+
+
+def test_trim_window_drops_all_orphan_tools():
+    model = FakeModel([ModelResponse(content="ok")])
+    agent = Agent(model=model, tools=[], window_size=3)
+    msgs = [{"role": "system", "content": "S"},
+            {"role": "tool", "tool_call_id": "c1", "content": "r1"},
+            {"role": "tool", "tool_call_id": "c2", "content": "r2"},
+            {"role": "user", "content": "u1"},
+            {"role": "user", "content": "u2"}]
+    trimmed = agent._get_trimmed_messages(msgs)
+    assert trimmed[0]["role"] == "system"
+    assert trimmed[1]["role"] != "tool"
+
+
+def test_build_context_window_no_orphan_tool():
+    """_build_context 截断后窗口不能以孤立 tool 消息开头（reasoner 400 防护）。"""
+    model = FakeModel([ModelResponse(content="ok")])
+    agent = Agent(model=model, tools=[], window_size=6)
+    msgs = [{"role": "system", "content": "S"}, {"role": "user", "content": "任务"}]
+    for i in range(4):
+        msgs.append({"role": "assistant", "content": None,
+                     "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "x", "arguments": "{}"}}]})
+        msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": f"r{i}"})
+    context = agent._build_context(msgs)
+    window_start = context[1] if len(context) > 1 else None
+    assert context[0]["role"] == "system"
+    if window_start is not None:
+        assert window_start["role"] != "tool"
